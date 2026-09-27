@@ -640,18 +640,18 @@ test("radar loop: next frame, wrap, hold while downloading, restart when left ov
   assert.equal(M.radarNextFrame(3, 5, 2), 0)          // past what is on disk
 })
 
-test("flow input: one magick call over the loop's frames, PGM on stdout", { skip: !fs.existsSync("/usr/bin/magick") && "ImageMagick not installed" }, () => {
+test("flow input: one magick call over the loop's frames, raw grey in base64", { skip: !fs.existsSync("/usr/bin/magick") && "ImageMagick not installed" }, () => {
   const { execFileSync } = require("node:child_process")
   const os = require("node:os")
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "met-flowin-"))
   // Rain (saturated blue) on black, and white "no coverage".
   execFileSync("magick", ["-size", "16x8", "xc:black", "-fill", "#3050ff", "-draw", "rectangle 0,0 7,7", path.join(dir, "f_a.png")])
   execFileSync("magick", ["-size", "16x8", "xc:white", path.join(dir, "f_b.png")])
-  const cmd = M.flowInputCommand(dir, ["f_a.png", "f_b.png"])
-  const out = execFileSync(cmd[0], cmd.slice(1)).toString().trim().split(/\s+/)
+  const cmd = M.flowInputCommand(dir, ["f_a.png", "f_b.png"], 4, 2)
+  const out = Buffer.from(execFileSync(cmd[0], cmd.slice(1)).toString(), "base64")
   // Two 4×2 images: rain on the left half of the first, none in the second.
-  assert.deepEqual(out.slice(0, 4), ["P2", "4", "2", "255"])
-  const first = out.slice(4, 12).map(Number), second = out.slice(16, 24).map(Number)
+  assert.equal(out.length, 16)
+  const first = Array.from(out.subarray(0, 8)), second = Array.from(out.subarray(8, 16))
   assert.ok(first[0] > 100 && first[4] > 100 && first[3] < 10 && first[7] < 10, `first ${first}`)
   assert.deepEqual(second, [0, 0, 0, 0, 0, 0, 0, 0])
 })

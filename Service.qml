@@ -825,12 +825,19 @@ Scope {
   // Flow (smoothing test): the motion between consecutive frames of the
   // loop on screen, estimated once per assembled loop off the GUI thread
   // (FlowWorker.mjs) from quarter-size rain-strength images (ImageMagick),
-  // and written as a small PPM atlas for the radar shader.
+  // and written as a small PPM atlas for the radar shader. What holds the
+  // frames' data (the process and its output, the worker and its engine)
+  // exists only while a loop is estimated: V4 keeps a heap once grown, so
+  // a long-lived worker would hold on to ≈45 MB.
   readonly property string yrShownKey: yrShown ? yrShown.key : ""
   property string yrFlowKey: ""
   property var yrFlowInfo: null
   property int yrFlowRevision: 0
+  // The loop being estimated ("" when idle) and its input; yrFlowWorking
+  // keeps the process and worker alive.
   property string yrFlowBusy: ""
+  property var yrFlowJob: null
+  property bool yrFlowWorking: false
   property double yrFlowStartMs: 0
   property double yrFlowInputMs: 0
   readonly property bool yrFlowReady: yrShownValid && yrFlowInfo !== null && yrFlowKey === yrShownKey
@@ -842,47 +849,68 @@ Scope {
         || yrFlowKey === yrShownKey || tilesDir === "") return
     var files = []
     for (var i = 0; i < yrShown.frames.length; i++) files.push(Model.radarFrameFile(yrShown.frames[i], yrShown.viewKey))
+    var w = Math.max(1, Math.round(yrMapWidth / 4))
+    var h = Math.max(1, Math.round(yrMapHeight / 4))
     yrFlowBusy = yrShownKey
     yrFlowStartMs = Date.now()
-    flowInputProc.key = yrShownKey
-    flowInputProc.command = Model.flowInputCommand(tilesDir, files)
-    flowInputProc.running = true
+    yrFlowJob = { key: yrShownKey, command: Model.flowInputCommand(tilesDir, files, w, h), w: w, h: h,
+                  count: files.length, mapWidth: yrMapWidth, mapHeight: yrMapHeight }
+    yrFlowWorking = true
   }
 
-  function flowDone() {
+  // Ends the process and worker (not from inside their own handlers).
+  function stopFlowWork() {
+    yrFlowJob = null
+    Qt.callLater(function() { root.yrFlowWorking = false })
+  }
+
+  function flowFailed(reason) {
+    if (reason) console.warn("nordic-weather: flow failed: " + reason)
+    stopFlowWork()
     yrFlowBusy = ""
-    Qt.callLater(maybeEstimateFlow)
   }
 
-  Process {
-    id: flowInputProc
-    property string key: ""
-    stdout: StdioCollector {
-      waitForEnd: true
-      onStreamFinished: {
-        root.yrFlowInputMs = Date.now() - root.yrFlowStartMs
-        if (text === "" || flowInputProc.key !== root.yrShownKey) {
-          root.flowDone()
-          return
-        }
-        flowWorker.sendMessage({ key: flowInputProc.key, pgm: text, mapWidth: root.yrMapWidth, mapHeight: root.yrMapHeight })
-      }
+  function flowResult(message) {
+    stopFlowWork()
+    if (!message.result || message.key !== yrShownKey) {
+      flowFailed(message.error)
+      Qt.callLater(maybeEstimateFlow)
+      return
     }
+    var r = message.result
+    flowFile.pending = { key: message.key, workerMs: message.ms,
+      info: { gx: r.gx, gy: r.gy, pairs: r.pairs, cellW: r.cellW, cellH: r.cellH, unit: r.unit, knownCells: r.knownCells } }
+    flowFile.setText(r.ppm)
   }
 
-  WorkerScript {
-    id: flowWorker
-    source: Qt.resolvedUrl("FlowWorker.mjs")
-    onMessage: function(message) {
-      if (!message.result || message.key !== root.yrShownKey) {
-        if (message.error) console.warn("nordic-weather: flow failed: " + message.error)
-        root.flowDone()
-        return
+  LazyLoader {
+    active: root.yrFlowWorking
+
+    Scope {
+      Process {
+        command: root.yrFlowJob ? root.yrFlowJob.command : []
+        running: root.yrFlowJob !== null
+        stdout: StdioCollector {
+          waitForEnd: true
+          onStreamFinished: {
+            var job = root.yrFlowJob
+            root.yrFlowInputMs = Date.now() - root.yrFlowStartMs
+            if (!job || text === "" || job.key !== root.yrShownKey) {
+              root.flowFailed(job && text === "" ? "no input from ImageMagick" : "")
+              Qt.callLater(root.maybeEstimateFlow)
+              return
+            }
+            flowWorker.sendMessage({ key: job.key, data: text, w: job.w, h: job.h, count: job.count,
+                                     mapWidth: job.mapWidth, mapHeight: job.mapHeight })
+          }
+        }
       }
-      var r = message.result
-      flowFile.pending = { key: message.key, workerMs: message.ms,
-        info: { gx: r.gx, gy: r.gy, pairs: r.pairs, cellW: r.cellW, cellH: r.cellH, unit: r.unit, knownCells: r.knownCells } }
-      flowFile.setText(r.ppm)
+
+      WorkerScript {
+        id: flowWorker
+        source: Qt.resolvedUrl("FlowWorker.mjs")
+        onMessage: function(message) { root.flowResult(message) }
+      }
     }
   }
 
@@ -902,11 +930,12 @@ Scope {
         console.log("nordic-weather: flow estimated, " + p.info.pairs + " pairs, " + p.info.knownCells + " cells with rain; input "
           + root.yrFlowInputMs + " ms, worker " + p.workerMs + " ms, total " + (Date.now() - root.yrFlowStartMs) + " ms")
       }
-      root.flowDone()
+      root.yrFlowBusy = ""
+      Qt.callLater(root.maybeEstimateFlow)
     }
     onSaveFailed: {
       pending = null
-      root.flowDone()
+      root.yrFlowBusy = ""
     }
   }
 

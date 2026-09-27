@@ -19,20 +19,20 @@ function rainImage(w, h, cx, cy, r, sx, sy) {
   return px
 }
 
-function pgm(w, h, px) {
-  const rows = []
-  for (let y = 0; y < h; y++) rows.push(Array.from(px.subarray(y * w, (y + 1) * w)).join(" "))
-  return `P2\n${w} ${h}\n255\n${rows.join("\n")}\n`
-}
+const b64 = (...frames) => Buffer.concat(frames.map((f) => Buffer.from(f))).toString("base64")
 
-test("flow: parses concatenated ASCII PGMs", async () => {
+test("flow: decodes base64 frames, padding included", async () => {
   const F = await load()
-  const images = F.parsePgms(pgm(3, 2, Uint8Array.from([0, 1, 2, 3, 4, 255])) + pgm(1, 1, Uint8Array.from([7])))
-  assert.equal(images.length, 2)
-  assert.deepEqual([images[0].w, images[0].h], [3, 2])
-  assert.deepEqual(Array.from(images[0].px), [0, 1, 2, 3, 4, 255])
-  assert.deepEqual(Array.from(images[1].px), [7])
-  assert.throws(() => F.parsePgms("P5\n1 1\n255\nx"))
+  for (const n of [1, 2, 3, 4, 3000]) {
+    const bytes = Uint8Array.from({ length: n }, (_, i) => (i * 37 + 11) & 255)
+    assert.deepEqual(Array.from(F.decodeBase64(Buffer.from(bytes).toString("base64"))), Array.from(bytes), `${n} bytes`)
+  }
+  const frames = F.decodeFrames(b64([0, 1, 2, 3, 4, 255], [6, 7, 8, 9, 10, 11]) + "\n", 3, 2, 2)
+  assert.equal(frames.length, 2)
+  assert.deepEqual([frames[0].w, frames[0].h], [3, 2])
+  assert.deepEqual(Array.from(frames[0].px), [0, 1, 2, 3, 4, 255])
+  assert.deepEqual(Array.from(frames[1].px), [6, 7, 8, 9, 10, 11])
+  assert.throws(() => F.decodeFrames(b64([1, 2, 3]), 3, 2, 2), /expected 12 bytes/)
 })
 
 test("flow: finds whole and sub-pixel motion where it rains", async () => {
@@ -67,9 +67,9 @@ test("flow: dry cells are unknown, then filled from their neighbours", async () 
 test("flow: a loop becomes a PPM atlas the shader can decode", async () => {
   const F = await load()
   const w = 64, h = 48
-  const frames = [0, 1, 2].map((k) => pgm(w, h, rainImage(w, h, 32, 24, 20, 2 * k, 0))).join("")
+  const frames = b64(...[0, 1, 2].map((k) => rainImage(w, h, 32, 24, 20, 2 * k, 0)))
   // Analysed at a quarter of the map size.
-  const out = F.loopFlow(frames, w * 4, h * 4)
+  const out = F.loopFlow(frames, w, h, 3, w * 4, h * 4)
   assert.equal(out.pairs, 2)
   assert.deepEqual([out.gx, out.gy], [4, 3])
   assert.equal(out.cellW, F.CELL * 4)
@@ -81,5 +81,5 @@ test("flow: a loop becomes a PPM atlas the shader can decode", async () => {
   const red = Number(tokens[at(0, 1, 1)])
   assert.ok(Math.abs(red - (128 + 8 * F.UNIT)) <= 3, `red ${red}`)
   assert.ok(Math.abs(Number(tokens[at(0, 1, 1) + 1]) - 128) <= 3)
-  assert.equal(F.loopFlow(pgm(w, h, new Uint8Array(w * h)), w, h), null)
+  assert.equal(F.loopFlow(b64(new Uint8Array(w * h)), w, h, 1, w, h), null)
 })

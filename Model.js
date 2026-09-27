@@ -1153,12 +1153,14 @@ function radarNextFrame(current, count, limit) {
   return next !== 0 && next >= limit ? cur : next
 }
 
-// Quarter-size rain-strength images of a loop's frames for Flow.mjs, as
-// ASCII PGM on stdout: ImageMagick's HCL chroma (rain is a saturated
-// colour; black "no rain" and white "no coverage" are both 0).
-function flowInputCommand(dir, files) {
-  var script = 'cd "$1" && shift && exec magick "$@" -resize 25% -colorspace HCL -channel G -separate +channel -depth 8 -compress none pgm:-'
-  return ["bash", "-c", script, "bash", dir].concat(files)
+// Rain-strength images of a loop's frames for Flow.mjs, w×h each (a
+// quarter of the map), as raw 8-bit grey in base64 on stdout: ImageMagick's
+// HCL chroma (rain is a saturated colour; black "no rain" and white "no
+// coverage" are both 0).
+function flowInputCommand(dir, files, w, h) {
+  var script = 'cd "$1" && size="$2x$3!" && shift 3'
+    + ' && magick "$@" -resize "$size" -colorspace HCL -channel G -separate +channel -depth 8 gray:- | base64 -w0'
+  return ["bash", "-c", script, "bash", dir, String(w), String(h)].concat(files)
 }
 
 // The time ruler on the yr.no map: one tick per frame. level is 1 at "now"

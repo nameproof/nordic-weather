@@ -1,5 +1,5 @@
 // WorkerScript for Service.qml: estimates a loop's motion (Flow.mjs) off
-// the GUI thread.
+// the GUI thread. Created for one loop and destroyed after it.
 import { loopFlow } from "Flow.mjs"
 
 WorkerScript.onMessage = function(message) {
@@ -7,7 +7,7 @@ WorkerScript.onMessage = function(message) {
   let result = null
   let error = ""
   try {
-    result = loopFlow(message.pgm, message.mapWidth, message.mapHeight)
+    result = loopFlow(message.data, message.w, message.h, message.count, message.mapWidth, message.mapHeight)
   } catch (e) {
     error = String(e)
   }

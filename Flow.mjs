@@ -5,14 +5,14 @@
 //
 // Input: the loop's frames as quarter-size grey images of rain strength
 // (ImageMagick's HCL chroma, so both black "no rain" and white "no
-// coverage" are 0), as ASCII PGM. Output: one motion vector per CELL×CELL
+// coverage" are 0), base64. Output: one motion vector per CELL×CELL
 // cell (≈64 px on the map) and frame pair, packed into a PPM image that
 // the radar shader samples with bilinear filtering.
 //
 // V4 only JIT-compiles functions that are called repeatedly, so the hot
-// loops live in small functions called per row or per candidate. Sizes are
-// forced to integers (| 0): parseInt gives doubles, and typed-array indexes
-// computed from a double take V4's slow path (≈15× slower here).
+// loops live in small functions called per chunk or per candidate. Sizes
+// are forced to integers (| 0): typed-array indexes computed from a double
+// take V4's slow path (≈15× slower here).
 
 export const CELL = 16         // analysed px per grid cell
 export const RADIUS = 4        // search ±4 analysed px (≈±16 px on the map)
@@ -20,58 +20,50 @@ export const RAIN = 16         // strength that counts as rain
 export const MIN_RAIN_PX = 4   // less rain than this in both frames: motion unknown
 export const UNIT = 4          // PPM encoding: 128 + 4 per map px (±31.75 px, 0.25 px steps)
 
-// ---- PGM (P2) input
+// ---- Input: the frames as raw 8-bit grey, w×h each, one after another,
+// base64-encoded (4 characters per 3 bytes): the densest form text takes,
+// and text is what a StdioCollector gives and what survives a message to a
+// WorkerScript (ArrayBuffers arrive empty).
 
-function skipSpace(text, pos) {
-  let c = text.charCodeAt(pos)
-  while (c === 32 || c === 10 || c === 13 || c === 9) c = text.charCodeAt(++pos)
-  return pos
-}
+const B64 = (function() {
+  const table = new Int16Array(128).fill(-1)
+  const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+  for (let i = 0; i < chars.length; i++) table[chars.charCodeAt(i)] = i
+  return table
+})()
 
-// One row of numbers into out[offset…]; returns the position after it.
-function readRow(text, pos, out, offset, count) {
-  for (let i = 0; i < count; i++) {
-    pos = skipSpace(text, pos)
-    let v = 0
-    let c = text.charCodeAt(pos)
-    while (c >= 48 && c <= 57) {
-      v = v * 10 + c - 48
-      c = text.charCodeAt(++pos)
-    }
-    out[offset + i] = v
+// `groups` groups of 4 characters from text[pos…] into out[at…].
+function decodeGroups(text, pos, out, at, groups) {
+  for (let g = 0; g < groups; g++) {
+    const n = (B64[text.charCodeAt(pos)] << 18) | (B64[text.charCodeAt(pos + 1)] << 12)
+      | ((B64[text.charCodeAt(pos + 2)] & 63) << 6) | (B64[text.charCodeAt(pos + 3)] & 63)
+    out[at] = (n >> 16) & 255
+    out[at + 1] = (n >> 8) & 255
+    out[at + 2] = n & 255
+    pos += 4
+    at += 3
   }
-  return pos
 }
 
-function readToken(text, pos) {
-  pos = skipSpace(text, pos)
-  const start = pos
-  let c = text.charCodeAt(pos)
-  while (pos < text.length && c !== 32 && c !== 10 && c !== 13 && c !== 9) c = text.charCodeAt(++pos)
-  return { value: text.slice(start, pos), pos: pos }
+export function decodeBase64(text) {
+  const length = text.length - text.length % 4
+  const pad = length && text.charAt(length - 1) === "=" ? (text.charAt(length - 2) === "=" ? 2 : 1) : 0
+  const out = new Uint8Array(length / 4 * 3)
+  const chunk = 1024
+  for (let g = 0; g < length / 4; g += chunk)
+    decodeGroups(text, g * 4, out, g * 3, Math.min(chunk, length / 4 - g))
+  return out.subarray(0, out.length - pad)
 }
 
-// Concatenated ASCII PGMs → [{ w, h, px: Uint8Array }].
-export function parsePgms(text) {
-  const images = []
-  let pos = 0
-  while (true) {
-    pos = skipSpace(text, pos)
-    if (pos >= text.length) break
-    const magic = readToken(text, pos)
-    if (magic.value !== "P2") throw new Error("not an ASCII PGM")
-    const w = readToken(text, magic.pos)
-    const h = readToken(text, w.pos)
-    const max = readToken(text, h.pos)
-    const width = parseInt(w.value, 10) | 0
-    const height = parseInt(h.value, 10) | 0
-    if (!(width > 0 && height > 0) || max.value !== "255") throw new Error("unsupported PGM")
-    const px = new Uint8Array(width * height)
-    pos = max.pos
-    for (let y = 0; y < height; y++) pos = readRow(text, pos, px, y * width, width)
-    images.push({ w: width, h: height, px: px })
-  }
-  return images
+// → [{ w, h, px: Uint8Array }], one per frame.
+export function decodeFrames(text, w, h, count) {
+  w = w | 0
+  h = h | 0
+  const bytes = decodeBase64(text.trim())
+  if (bytes.length !== w * h * count) throw new Error("expected " + w * h * count + " bytes, got " + bytes.length)
+  const frames = []
+  for (let k = 0; k < count; k++) frames.push({ w: w, h: h, px: bytes.subarray(k * w * h, (k + 1) * w * h) })
+  return frames
 }
 
 // ---- Block matching
@@ -272,13 +264,13 @@ export function flowAtlas(fields, scaleX, scaleY) {
   return rows.join("\n") + "\n"
 }
 
-// The whole loop: PGM text of n frames → atlas of n − 1 fields, with the
-// numbers the shader needs (grid size, cell size in map px).
-export function loopFlow(pgmText, mapWidth, mapHeight) {
-  const images = parsePgms(pgmText)
-  if (images.length < 2) return null
-  const w = images[0].w
-  const h = images[0].h
+// The whole loop: count frames of w×h (base64) → atlas of count − 1
+// fields, with the numbers the shader needs (grid size, cell size in map px).
+export function loopFlow(data, w, h, count, mapWidth, mapHeight) {
+  if (count < 2) return null
+  const images = decodeFrames(data, w, h, count)
+  w = w | 0
+  h = h | 0
   const scaleX = mapWidth / w
   const scaleY = mapHeight / h
   let raw = []
