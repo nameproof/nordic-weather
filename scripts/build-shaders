@@ -1,0 +1,25 @@
+#!/bin/bash
+# Compile shaders/*.frag to .qsb (Qt's precompiled shader format; Qt 6 can't
+# take shader source at runtime). Only rebuilds what changed, and records the
+# source fingerprint that tests/shaders.test.js checks.
+set -euo pipefail
+
+DIR="$(cd "$(dirname "$0")/.." && pwd)/shaders"
+QSB=${QSB:-/usr/lib/qt6/bin/qsb}
+built=0
+
+for src in "$DIR"/*.frag; do
+  out="$src.qsb"
+  sum="$src.sha256"
+  current=$(sha256sum "$src" | cut -d' ' -f1)
+  if [[ -f $out && -f $sum && $(cat "$sum") == "$current" && ${1:-} != --force ]]; then
+    continue
+  fi
+  [[ -x $QSB ]] || { echo "build-shaders: $QSB not found (package qt6-shadertools)" >&2; exit 1; }
+  "$QSB" --qt6 -o "$out" "$src"
+  echo "$current" >"$sum"
+  echo "Built ${out#"$DIR"/}"
+  built=1
+done
+
+(( built )) || echo "Shaders up to date"

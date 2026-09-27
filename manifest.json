@@ -1,0 +1,64 @@
+{
+  "schemaVersion": 1,
+  "id": "io.github.nameproof.nordic-weather",
+  "name": "Nordic Weather",
+  "version": "0.1.0",
+  "author": "nameproof",
+  "license": "MIT",
+  "description": "Weather pill and forecast panel with data from MET Norway: radar nowcast, hourly and 10-day forecast, sun and moon.",
+  "kinds": [
+    "service",
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "service": "Service.qml",
+    "barWidget": "BarWidget.qml"
+  },
+  "omarchy": {
+    "clonedFrom": "omarchy.weather"
+  },
+  "barWidget": {
+    "displayName": "Nordic Weather",
+    "description": "Weather pill with forecast panel",
+    "category": "Info",
+    "allowMultiple": false,
+    "defaultSection": "center",
+    "defaults": {
+      "hourStep": 3,
+      "hourlyDays": 3,
+      "longRangeDays": 10
+    },
+    "schema": [
+      {
+        "key": "hourStep",
+        "type": "integer",
+        "label": "Hour step",
+        "description": "Hours between rows in the hourly forecast.",
+        "min": 1,
+        "max": 6,
+        "step": 1,
+        "defaultValue": 3
+      },
+      {
+        "key": "hourlyDays",
+        "type": "integer",
+        "label": "Days with hourly rows",
+        "description": "How many days, starting today, get hourly rows.",
+        "min": 1,
+        "max": 3,
+        "step": 1,
+        "defaultValue": 3
+      },
+      {
+        "key": "longRangeDays",
+        "type": "integer",
+        "label": "Days in overview",
+        "description": "Rows in the daily overview. 0 hides it.",
+        "min": 0,
+        "max": 10,
+        "step": 1,
+        "defaultValue": 10
+      }
+    ]
+  }
+}

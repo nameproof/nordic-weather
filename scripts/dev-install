@@ -1,0 +1,35 @@
+#!/bin/bash
+# Copy the working tree into the Omarchy plugin folder (symlinks are not
+# allowed there) and let the shell hot-reload it. Pass --enable the first
+# time to swap it in for the built-in omarchy.weather.
+#
+# The shell notices the change but keeps the widget's already-compiled QML
+# and JS while it is on screen, so any change restarts the shell instead.
+set -euo pipefail
+
+ID=io.github.nameproof.nordic-weather
+SRC="$(cd "$(dirname "$0")/.." && pwd)"
+DEST="$HOME/.config/omarchy/plugins/$ID"
+
+"$SRC/scripts/build-shaders"
+mkdir -p "$DEST"
+# nullglob: a first deploy has no files yet, and cat must not fail on it
+# (manifest.jso[n] is a glob so it drops out too).
+code_sum() { (shopt -s nullglob; cat "$DEST"/*.qml "$DEST"/*.js "$DEST"/manifest.jso[n] "$DEST"/shaders/*.qsb) | sha256sum; }
+before=$(code_sum)
+rsync -a --delete --exclude .git --exclude node_modules --exclude build "$SRC/" "$DEST/"
+# Validate what was installed (build/ holds a venv with symlinks, but it is
+# git-ignored and never part of the plugin).
+omarchy-plugin-validate "$DEST"
+echo "Synced to $DEST"
+
+if [[ $before != "$(code_sum)" ]]; then
+  echo "Plugin code changed; restarting the shell to load it"
+  omarchy restart shell >/dev/null 2>&1
+else
+  omarchy-shell shell rescanPlugins >/dev/null
+fi
+
+if [[ ${1:-} == --enable ]]; then
+  omarchy plugin enable "$ID"
+fi

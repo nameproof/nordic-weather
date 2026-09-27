@@ -1,0 +1,8 @@
+422 Unprocessable Entity
+The location is outside the geographic area supported by the product.
+  latitude:   1
+  longitude: 103
+  Nowcast is only available for the Nordic area 
+Specified parameters:
+  * lon = 103.8198
+  * lat = 1.3521

@@ -1,0 +1,20 @@
+# Geofabrik extracts for the base map: everything intersecting the radar
+# coverage and the zoom-5 overview frame (≈1°W–37°E, 54–73°N).
+europe/norway
+europe/sweden
+europe/finland
+europe/denmark
+europe/estonia
+europe/latvia
+europe/lithuania
+europe/belarus
+europe/germany/schleswig-holstein
+europe/germany/mecklenburg-vorpommern
+europe/poland/pomorskie
+europe/poland/zachodniopomorskie
+europe/poland/warminsko-mazurskie
+europe/poland/podlaskie
+europe/united-kingdom/scotland
+russia/northwestern-fed-district
+russia/central-fed-district
+russia/kaliningrad

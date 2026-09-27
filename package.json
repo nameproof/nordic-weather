@@ -1,0 +1,7 @@
+{
+  "name": "nordic-weather",
+  "private": true,
+  "scripts": {
+    "test": "TZ=Europe/Stockholm node --test tests/*.test.js"
+  }
+}
