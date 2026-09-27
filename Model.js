@@ -1141,6 +1141,25 @@ function radarFrames(obsText, nowcastText) {
   return { frames: frames, nowIndex: obs.length - 1 }
 }
 
+// The time ruler on the yr.no map: one tick per frame. level is 1 at "now"
+// (the last observed frame) and falls off linearly towards both ends; hour
+// marks full local hours. The key covers everything a tick draws, since a
+// ScriptModel keeps a delegate with an unchanged key as it is.
+function rulerTicks(frames, nowIndex) {
+  var n = (frames || []).length
+  var now = Math.max(0, Math.min(n - 1, nowIndex))
+  var reach = Math.max(now, n - 1 - now, 1)
+  var out = []
+  for (var i = 0; i < n; i++) {
+    var level = Math.round((1 - Math.abs(i - now) / reach) * 1000) / 1000
+    var hour = new Date(frames[i].timeMs).getMinutes() === 0
+    var forecast = !!frames[i].forecast
+    out.push({ level: level, hour: hour, forecast: forecast,
+               key: frames[i].timeMs + "|" + level + "|" + hour + "|" + forecast })
+  }
+  return out
+}
+
 // "18:45" for an observed frame, "Prognos 19:15" for a nowcast frame.
 function mapFrameLabel(frame, lang) {
   if (!frame) return ""
@@ -1345,6 +1364,7 @@ if (typeof module !== "undefined") {
     mapFrameLabel: mapFrameLabel,
     radarDownloads: radarDownloads,
     radarFramesKey: radarFramesKey,
+    rulerTicks: rulerTicks,
     mapViewKey: mapViewKey,
     radarFrameFile: radarFrameFile,
     frameComposeSpecs: frameComposeSpecs,

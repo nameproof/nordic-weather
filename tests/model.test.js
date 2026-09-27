@@ -615,6 +615,22 @@ test("radar frame-list keys differ whenever any frame's run or time does", () =>
   assert.equal(M.radarFramesKey([]), "")
 })
 
+test("time ruler: tallest at now, falling off to both ends, hours marked", () => {
+  const t0 = Date.parse("2026-09-27T07:50:00Z")  // 09:50 local
+  const frames = Array.from({ length: 7 }, (_, i) => ({ timeMs: t0 + i * 300000, forecast: i > 2 }))
+  const ticks = M.rulerTicks(frames, 2)
+  assert.deepEqual(ticks.map((t) => t.level), [0.5, 0.75, 1, 0.75, 0.5, 0.25, 0])
+  assert.deepEqual(ticks.map((t) => t.hour), [false, false, true, false, false, false, false])  // 10:00
+  assert.deepEqual(ticks.map((t) => t.forecast), [false, false, false, true, true, true, true])
+  assert.equal(new Set(ticks.map((t) => t.key)).size, ticks.length)
+  // A new "now" changes the levels, so the keys change too (ScriptModel).
+  assert.notEqual(M.rulerTicks(frames, 3)[0].key, ticks[0].key)
+  // No observations: the ruler peaks at the first frame.
+  assert.equal(M.rulerTicks(frames, -1)[0].level, 1)
+  assert.deepEqual(M.rulerTicks([], 0), [])
+  assert.deepEqual(M.rulerTicks([frames[0]], 0).map((t) => t.level), [1])
+})
+
 test("list keys: unique, stable for unchanged content, new for changed content", () => {
   const build = (nowMs) => M.buildView({ forecast: alingsas, nowcast: nowcastAlingsas, sun, moon,
     location: { name: "Alingsås", latitude: 57.93, longitude: 12.53 }, lang: "sv", nowMs, settings: {} })

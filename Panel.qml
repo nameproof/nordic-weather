@@ -160,11 +160,14 @@ Panel {
   readonly property int yrFrame: service ? service.yrFrame : 0
   readonly property bool yrPaused: service ? service.yrPaused : false
   readonly property bool yrPlaying: service ? service.yrPlaying : false
+  readonly property int yrPlayLimit: service ? service.yrPlayLimit : 0
 
   function refresh(force) { if (service) service.refresh(force) }
   function zoomMap(delta) { if (service) service.zoomMap(delta) }
   function setRadarSource(source) { if (service) service.setRadarSource(source) }
   function togglePause() { if (service) service.togglePause() }
+  function seekFrame(index) { if (service) service.seekFrame(index) }
+  function stepFrame(delta) { if (service) service.stepFrame(delta) }
 
   // Labels depend on this panel's font, so they are placed here.
   FontMetrics {
@@ -310,6 +313,10 @@ Panel {
         if (key === "r") root.refresh(true)
         else if ((key === "+" || key === "=") && root.yrRadarActive) root.zoomMap(1)
         else if (key === "-" && root.yrRadarActive) root.zoomMap(-1)
+        // Video-player keys: step a frame (pauses), play/pause.
+        else if (key === "," && root.yrRadarActive) root.stepFrame(-1)
+        else if (key === "." && root.yrRadarActive) root.stepFrame(1)
+        else if (key === "p" && root.yrRadarActive) root.togglePause()
       }
 
       Flickable {
@@ -1098,51 +1105,6 @@ Panel {
           }
         }
 
-        // Timeline for the yr.no map: past | now | forecast, with the playhead.
-        Item {
-          id: yrTimeline
-          visible: root.radarSource === "yr" && root.yrDisplay.frames.length > 1
-          width: radarBox.width
-          height: Style.space(8)
-
-          readonly property int count: root.yrDisplay.frames.length
-          readonly property real step: count > 1 ? width / (count - 1) : 0
-
-          Rectangle {
-            anchors.verticalCenter: parent.verticalCenter
-            width: parent.width
-            height: Style.space(2)
-            radius: height / 2
-            color: root.fg
-            opacity: 0.15
-          }
-          // Forecast part of the track.
-          Rectangle {
-            anchors.verticalCenter: parent.verticalCenter
-            x: Math.max(0, root.yrDisplay.nowIndex) * yrTimeline.step
-            width: parent.width - x
-            height: Style.space(2)
-            color: Color.accent
-            opacity: 0.35
-          }
-          // Now.
-          Rectangle {
-            x: Math.max(0, root.yrDisplay.nowIndex) * yrTimeline.step - width / 2
-            width: Style.space(2)
-            height: parent.height
-            color: root.fg
-            opacity: 0.6
-          }
-          Rectangle {
-            x: Math.min(root.yrFrame, yrTimeline.count - 1) * yrTimeline.step - width / 2
-            anchors.verticalCenter: parent.verticalCenter
-            width: Style.space(8)
-            height: width
-            radius: width / 2
-            color: root.yrCurrentFrame && root.yrCurrentFrame.forecast ? Color.accent : root.fg
-          }
-        }
-
         Item {
           width: radarBox.width
           height: radarFrameLabel.implicitHeight
@@ -1410,6 +1372,106 @@ Panel {
             onClicked: root.togglePause()
             onWheel: function(wheel) {
               if (wheel.angleDelta.y !== 0) root.zoomMap(wheel.angleDelta.y > 0 ? 1 : -1)
+            }
+          }
+
+          // Time ruler: one tick per frame, tallest at "now" and shorter
+          // further out, with the frame on screen lit (and the ones played
+          // before it brighter), so where the loop is in time stays in the
+          // corner of the eye while watching the rain. Press or drag to
+          // scrub; that pauses, and a click on the map resumes.
+          Item {
+            id: ruler
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.bottom: parent.bottom
+            // Hit and hover area; the ticks sit at its bottom.
+            height: Style.space(36)
+            visible: count > 1
+
+            readonly property var ticks: Model.rulerTicks(root.yrDisplay.frames, root.yrDisplay.nowIndex)
+            readonly property int count: ticks.length
+            readonly property int pad: Style.space(16)
+            readonly property real step: count > 1 ? (width - 2 * pad) / (count - 1) : 0
+            readonly property int current: Math.min(root.yrFrame, count - 1)
+            readonly property int tickMin: Style.space(2)
+            readonly property int tickMax: Style.space(20)
+            readonly property bool active: rulerArea.containsMouse || rulerArea.pressed
+            readonly property int hoverIndex: rulerArea.pressed ? current : indexAt(rulerArea.mouseX)
+            // Hovering or scrubbing makes the ruler taller.
+            property real grow: active ? 1.5 : 1
+            Behavior on grow { NumberAnimation { duration: 120; easing.type: Easing.OutCubic } }
+
+            function indexAt(x) {
+              return step > 0 ? Math.max(0, Math.min(count - 1, Math.round((x - pad) / step))) : 0
+            }
+
+            // A light wash so the ticks read over rain and roads alike.
+            Rectangle {
+              anchors.left: parent.left
+              anchors.right: parent.right
+              anchors.bottom: parent.bottom
+              height: Math.round(Style.space(22) * ruler.grow)
+              gradient: Gradient {
+                GradientStop { position: 0; color: Qt.rgba(root.mapLand.r, root.mapLand.g, root.mapLand.b, 0) }
+                GradientStop { position: 1; color: Qt.rgba(root.mapLand.r, root.mapLand.g, root.mapLand.b, 0.75) }
+              }
+            }
+
+            Repeater {
+              model: ScriptModel { values: ruler.ticks; objectProp: "key" }
+
+              Rectangle {
+                required property var modelData
+                required property int index
+                readonly property bool isCurrent: index === ruler.current
+                readonly property real base: ruler.tickMin + (ruler.tickMax - ruler.tickMin) * modelData.level
+                x: Math.round(ruler.pad + index * ruler.step - width / 2)
+                anchors.bottom: parent.bottom
+                anchors.bottomMargin: Style.space(6)
+                width: isCurrent ? 3 : 2
+                // The lit tick: at least 18 px, and always a head taller than
+                // the tick it stands on.
+                height: Math.round((isCurrent ? Math.max(Style.space(18), base + Style.space(6)) : base) * ruler.grow)
+                radius: 1
+                color: isCurrent && modelData.forecast ? Color.accent : root.fg
+                // Not downloaded yet: barely there. Now and full hours a bit
+                // stronger.
+                opacity: isCurrent ? 1
+                  : modelData.level === 1 ? 0.8
+                  : index >= root.yrPlayLimit ? 0.12
+                  : (index < ruler.current ? 0.55 : 0.3) + (modelData.hour ? 0.15 : 0)
+              }
+            }
+
+            // The time under the pointer while hovering or scrubbing.
+            Text {
+              readonly property var frame: root.yrDisplay.frames[ruler.hoverIndex] || null
+              visible: ruler.active && frame !== null
+              x: Math.max(Style.space(4), Math.min(parent.width - width - Style.space(4),
+                Math.round(ruler.pad + ruler.hoverIndex * ruler.step - width / 2)))
+              y: parent.height - Style.space(6) - Math.round(ruler.tickMax * 1.5) - Style.space(8) - height
+              textFormat: Text.PlainText
+              text: Model.mapFrameLabel(frame, root.lang)
+              color: frame && frame.forecast ? Color.accent : root.fg
+              style: Text.Outline
+              styleColor: root.mapLand
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.bodySmall
+            }
+
+            MouseArea {
+              id: rulerArea
+              anchors.fill: parent
+              hoverEnabled: true
+              preventStealing: true
+              cursorShape: Qt.PointingHandCursor
+              onPressed: function(mouse) { root.seekFrame(ruler.indexAt(mouse.x)) }
+              onPositionChanged: function(mouse) { if (pressed) root.seekFrame(ruler.indexAt(mouse.x)) }
+              // Zooming with the wheel works over the ruler too.
+              onWheel: function(wheel) {
+                if (wheel.angleDelta.y !== 0) root.zoomMap(wheel.angleDelta.y > 0 ? 1 : -1)
+              }
             }
           }
 

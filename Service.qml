@@ -415,7 +415,7 @@ Scope {
   readonly property bool yrRadarActive: radarViewer !== null && radarSource === "yr" && hasLocation
   onRadarSourceChanged: maybeFetch(false)
   onMetRadarActiveChanged: if (metRadarActive) maybeFetch(false)
-  onYrRadarActiveChanged: if (yrRadarActive) { yrFrame = 0; yrHold = 0; yrPaused = false; maybeFetch(false) }
+  onYrRadarActiveChanged: if (yrRadarActive) { yrFrame = 0; yrPaused = false; maybeFetch(false) }
 
   function setRadarSource(source) {
     if (source === "met" || source === "yr") setPref("radarSource", source)
@@ -482,14 +482,25 @@ Scope {
   readonly property int yrBatchFrames: 6
 
   // Animation: 250 ms per 5-minute frame, looping straight from the last
-  // forecast frame back to the first, with a short hold on "now". Click the
-  // map to pause.
+  // forecast frame back to the first. Click the map to pause.
   property int yrFrame: 0
-  property int yrHold: 0
   property bool yrPaused: false
 
   function togglePause() {
     yrPaused = !yrPaused
+  }
+
+  // Scrubbing (the ruler on the map, or , and .): show a frame and pause.
+  // Only frames that are downloaded can be shown.
+  function seekFrame(index) {
+    var n = Math.min(yrDisplay.frames.length, yrPlayLimit)
+    if (n <= 0) return
+    yrFrame = Math.max(0, Math.min(n - 1, index))
+    yrPaused = true
+  }
+
+  function stepFrame(delta) {
+    seekFrame(Math.min(yrFrame, yrDisplay.frames.length - 1) + delta)
   }
 
   // Identifies the full tile set: the map view (which tiles) and every
@@ -807,7 +818,6 @@ Scope {
     repeat: true
     running: root.yrRadarActive && root.yrPlaying && !root.yrPaused && root.yrDisplay.frames.length > 1
     onTriggered: {
-      if (root.yrHold > 0) { root.yrHold--; return }
       var n = root.yrDisplay.frames.length
       var limit = Math.min(n, root.yrPlayLimit)
       var cur = Math.min(root.yrFrame, n - 1)
@@ -817,7 +827,6 @@ Scope {
       // Not downloaded yet: hold on the current frame until it is.
       if (next !== 0 && next >= limit) return
       root.yrFrame = next
-      if (next === root.yrDisplay.nowIndex) root.yrHold = 4
     }
   }
 }
