@@ -631,6 +631,31 @@ test("time ruler: tallest at now, falling off to both ends, hours marked", () =>
   assert.deepEqual(M.rulerTicks([frames[0]], 0).map((t) => t.level), [1])
 })
 
+test("radar loop: next frame, wrap, hold while downloading, restart when left over", () => {
+  assert.equal(M.radarNextFrame(0, 5, 5), 1)
+  assert.equal(M.radarNextFrame(4, 5, 5), 0)          // the seam: back to the first
+  assert.equal(M.radarNextFrame(2, 5, 3), 2)          // frame 3 not on disk yet: hold
+  assert.equal(M.radarNextFrame(2, 5, 4), 3)
+  assert.equal(M.radarNextFrame(7, 5, 5), 0)          // from a longer loop
+  assert.equal(M.radarNextFrame(3, 5, 2), 0)          // past what is on disk
+})
+
+test("flow input: one magick call over the loop's frames, PGM on stdout", { skip: !fs.existsSync("/usr/bin/magick") && "ImageMagick not installed" }, () => {
+  const { execFileSync } = require("node:child_process")
+  const os = require("node:os")
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "met-flowin-"))
+  // Rain (saturated blue) on black, and white "no coverage".
+  execFileSync("magick", ["-size", "16x8", "xc:black", "-fill", "#3050ff", "-draw", "rectangle 0,0 7,7", path.join(dir, "f_a.png")])
+  execFileSync("magick", ["-size", "16x8", "xc:white", path.join(dir, "f_b.png")])
+  const cmd = M.flowInputCommand(dir, ["f_a.png", "f_b.png"])
+  const out = execFileSync(cmd[0], cmd.slice(1)).toString().trim().split(/\s+/)
+  // Two 4×2 images: rain on the left half of the first, none in the second.
+  assert.deepEqual(out.slice(0, 4), ["P2", "4", "2", "255"])
+  const first = out.slice(4, 12).map(Number), second = out.slice(16, 24).map(Number)
+  assert.ok(first[0] > 100 && first[4] > 100 && first[3] < 10 && first[7] < 10, `first ${first}`)
+  assert.deepEqual(second, [0, 0, 0, 0, 0, 0, 0, 0])
+})
+
 test("list keys: unique, stable for unchanged content, new for changed content", () => {
   const build = (nowMs) => M.buildView({ forecast: alingsas, nowcast: nowcastAlingsas, sun, moon,
     location: { name: "Alingsås", latitude: 57.93, longitude: 12.53 }, lang: "sv", nowMs, settings: {} })

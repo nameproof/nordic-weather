@@ -1141,6 +1141,26 @@ function radarFrames(obsText, nowcastText) {
   return { frames: frames, nowIndex: obs.length - 1 }
 }
 
+// The frame the radar loop shows after `current` (count frames, `limit` of
+// them on disk): the next one, the first again after the last, or
+// `current` while the next is still downloading. A frame left over from
+// another, shorter loop restarts at the first.
+function radarNextFrame(current, count, limit) {
+  if (count <= 0) return 0
+  var cur = Math.min(current, count - 1)
+  if (cur >= limit) return 0
+  var next = cur + 1 >= count ? 0 : cur + 1
+  return next !== 0 && next >= limit ? cur : next
+}
+
+// Quarter-size rain-strength images of a loop's frames for Flow.mjs, as
+// ASCII PGM on stdout: ImageMagick's HCL chroma (rain is a saturated
+// colour; black "no rain" and white "no coverage" are both 0).
+function flowInputCommand(dir, files) {
+  var script = 'cd "$1" && shift && exec magick "$@" -resize 25% -colorspace HCL -channel G -separate +channel -depth 8 -compress none pgm:-'
+  return ["bash", "-c", script, "bash", dir].concat(files)
+}
+
 // The time ruler on the yr.no map: one tick per frame. level is 1 at "now"
 // (the last observed frame) and falls off linearly towards both ends; hour
 // marks full local hours. The key covers everything a tick draws, since a
@@ -1365,6 +1385,8 @@ if (typeof module !== "undefined") {
     radarDownloads: radarDownloads,
     radarFramesKey: radarFramesKey,
     rulerTicks: rulerTicks,
+    radarNextFrame: radarNextFrame,
+    flowInputCommand: flowInputCommand,
     mapViewKey: mapViewKey,
     radarFrameFile: radarFrameFile,
     frameComposeSpecs: frameComposeSpecs,

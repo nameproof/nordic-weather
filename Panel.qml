@@ -162,12 +162,29 @@ Panel {
   readonly property bool yrPlaying: service ? service.yrPlaying : false
   readonly property int yrPlayLimit: service ? service.yrPlayLimit : 0
 
+  // Smoothing test (see Service.qml): off, fade or flow.
+  readonly property string radarSmoothing: service ? service.radarSmoothing : "off"
+  readonly property int radarFps: service ? service.radarFps : 8
+  readonly property bool yrSmooth: radarSmoothing !== "off"
+  readonly property real yrBlend: service ? service.yrBlend : 0
+  readonly property int yrCurrentIndex: service ? service.yrCurrentIndex : -1
+  readonly property var yrSlots: service ? service.yrSlots : ({ frames: [null, null], current: 0 })
+  readonly property bool yrFlowReady: service ? service.yrFlowReady : false
+  readonly property var yrFlowInfo: service ? service.yrFlowInfo : null
+  readonly property int yrFlowRevision: service ? service.yrFlowRevision : 0
+
+  function yrFrameUrl(frame) {
+    return frame ? "file://" + tilesDir + "/" + Model.radarFrameFile(frame, yrViewKey) + "?v=" + yrFramesRevision : ""
+  }
+
   function refresh(force) { if (service) service.refresh(force) }
   function zoomMap(delta) { if (service) service.zoomMap(delta) }
   function setRadarSource(source) { if (service) service.setRadarSource(source) }
   function togglePause() { if (service) service.togglePause() }
   function seekFrame(index) { if (service) service.seekFrame(index) }
   function stepFrame(delta) { if (service) service.stepFrame(delta) }
+  function setRadarSmoothing(mode) { if (service) service.setRadarSmoothing(mode) }
+  function setRadarFps(fps) { if (service) service.setRadarFps(fps) }
 
   // Labels depend on this panel's font, so they are placed here.
   FontMetrics {
@@ -1178,6 +1195,63 @@ Panel {
             }
           }
         }
+
+        // Smoothing test (temporary): how the frames in between radar frames
+        // are drawn, and how many drawings per second.
+        Row {
+          anchors.horizontalCenter: parent.horizontalCenter
+          visible: root.radarSource === "yr"
+          spacing: 0
+
+          Repeater {
+            model: [
+              { kind: "mode", value: "off", label: "Off" },
+              { kind: "mode", value: "fade", label: "Fade" },
+              { kind: "mode", value: "flow", label: "Flow" },
+              { kind: "gap" },
+              { kind: "fps", value: 8, label: "8 fps" },
+              { kind: "fps", value: 12, label: "12" },
+              { kind: "fps", value: 16, label: "16" }
+            ]
+
+            Rectangle {
+              required property var modelData
+              readonly property bool gap: modelData.kind === "gap"
+              readonly property bool selected: modelData.kind === "mode" ? root.radarSmoothing === modelData.value
+                : modelData.kind === "fps" && root.radarFps === modelData.value
+              width: gap ? Style.space(12) : smoothLabel.implicitWidth + Style.space(18)
+              height: smoothLabel.implicitHeight + Style.space(8)
+              radius: Style.cornerRadius
+              opacity: modelData.kind === "fps" && !root.yrSmooth ? 0.4 : 1
+              color: gap ? "transparent" : selected ? Style.hoverFillFor(root.fg, Color.accent)
+                : (smoothArea.containsMouse ? Qt.rgba(root.fg.r, root.fg.g, root.fg.b, 0.06) : "transparent")
+              border.width: gap ? 0 : 1
+              border.color: Qt.rgba(root.fg.r, root.fg.g, root.fg.b, selected ? 0.35 : 0.15)
+
+              Text {
+                id: smoothLabel
+                anchors.centerIn: parent
+                visible: !parent.gap
+                textFormat: Text.PlainText
+                text: modelData.label || ""
+                color: parent.selected ? root.fg : root.dim
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+              }
+              MouseArea {
+                id: smoothArea
+                anchors.fill: parent
+                enabled: !parent.gap
+                hoverEnabled: true
+                cursorShape: Qt.PointingHandCursor
+                onClicked: {
+                  if (modelData.kind === "mode") root.setRadarSmoothing(modelData.value)
+                  else root.setRadarFps(modelData.value)
+                }
+              }
+            }
+          }
+        }
       }
 
       Component {
@@ -1235,15 +1309,12 @@ Panel {
             cache: false
             asynchronous: true
             retainWhileLoading: true
-            source: root.yrShownValid && root.yrCurrentFrame
-              ? "file://" + root.tilesDir + "/" + Model.radarFrameFile(root.yrCurrentFrame, root.yrViewKey)
-                + "?v=" + root.yrFramesRevision
-              : ""
+            source: !root.yrSmooth && root.yrShownValid ? root.yrFrameUrl(root.yrCurrentFrame) : ""
           }
           ShaderEffect {
             anchors.fill: parent
             // Loading also counts: retainWhileLoading keeps the previous frame up.
-            visible: root.yrShownValid && radarFrameImage.status !== Image.Null && radarFrameImage.status !== Image.Error
+            visible: !root.yrSmooth && root.yrShownValid && radarFrameImage.status !== Image.Null && radarFrameImage.status !== Image.Error
             property var source: radarFrameImage
             property real strength: root.radarStrength
             property real dimStrength: root.radarDimStrength
@@ -1252,6 +1323,71 @@ Panel {
             property real lineWidth: root.radarLineWidth
             property color lineColor: root.radarLineColor
             fragmentShader: Qt.resolvedUrl("shaders/radar.frag.qsb")
+          }
+
+          // Smoothing test: the current and the upcoming frame in two images
+          // that swap roles at every frame (Service.yrSlots), so each frame is
+          // decoded once, while it waits as the upcoming one. Filtered, because flow
+          // samples between pixels.
+          Image {
+            id: smoothImage0
+            anchors.fill: parent
+            visible: false
+            smooth: true
+            cache: false
+            asynchronous: true
+            retainWhileLoading: true
+            source: root.yrSmooth && root.yrShownValid
+              ? root.yrFrameUrl(root.yrSlots.frames[0]) : ""
+          }
+          Image {
+            id: smoothImage1
+            anchors.fill: parent
+            visible: false
+            smooth: true
+            cache: false
+            asynchronous: true
+            retainWhileLoading: true
+            source: root.yrSmooth && root.yrShownValid
+              ? root.yrFrameUrl(root.yrSlots.frames[1]) : ""
+          }
+          // The loop's motion field atlas (Flow.mjs), filtered so motion
+          // varies smoothly between cells.
+          Image {
+            id: flowImage
+            visible: false
+            smooth: true
+            cache: false
+            asynchronous: true
+            source: root.radarSmoothing === "flow" && root.yrFlowReady
+              ? "file://" + root.tilesDir + "/flow.ppm?v=" + root.yrFlowRevision : ""
+          }
+          ShaderEffect {
+            anchors.fill: parent
+            readonly property var current: root.yrSlots.current === 0 ? smoothImage0 : smoothImage1
+            readonly property var upcoming: root.yrSlots.current === 0 ? smoothImage1 : smoothImage0
+            readonly property bool upcomingReady: upcoming.status === Image.Ready
+            readonly property bool flowUsable: root.radarSmoothing === "flow" && root.yrFlowReady
+              && flowImage.status === Image.Ready && root.yrFlowInfo !== null
+            visible: root.yrSmooth && root.yrShownValid && current.status !== Image.Null && current.status !== Image.Error
+            property var sourceA: current
+            property var sourceB: upcomingReady ? upcoming : current
+            property var flowField: flowUsable ? flowImage : current
+            property real blend: upcomingReady ? root.yrBlend : 0
+            property real flowOn: flowUsable ? 1 : 0
+            property real flowPair: Math.max(0, root.yrCurrentIndex)
+            property real flowPairs: root.yrFlowInfo ? root.yrFlowInfo.pairs : 1
+            property real flowUnit: root.yrFlowInfo ? root.yrFlowInfo.unit : 1
+            property vector2d flowGrid: root.yrFlowInfo ? Qt.vector2d(root.yrFlowInfo.gx, root.yrFlowInfo.gy) : Qt.vector2d(1, 1)
+            property vector2d flowCell: root.yrFlowInfo ? Qt.vector2d(root.yrFlowInfo.cellW, root.yrFlowInfo.cellH) : Qt.vector2d(1, 1)
+            property vector2d mapSize: Qt.vector2d(width, height)
+            property real strength: root.radarStrength
+            property real dimStrength: root.radarDimStrength
+            property real lineStrength: root.radarLineStrength
+            property real lineSpacing: root.radarLineSpacing
+            property real lineWidth: root.radarLineWidth
+            property color lineColor: root.radarLineColor
+            fragmentShader: Qt.resolvedUrl("shaders/radar-smooth.frag.qsb")
           }
 
           // Until then (first open, new zoom): the frame's tiles, combined in
