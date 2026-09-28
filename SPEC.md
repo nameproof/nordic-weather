@@ -195,17 +195,19 @@ Rules:
 
 ## Language
 
-Swedish (`sv`), Norwegian Bokmål (`nb`) and English (`en`).
+Swedish (`sv`), Norwegian Bokmål (`nb`), Danish (`da`), Finnish (`fi`) and
+English (`en`).
 
 - **Picking the language:** the first `STRINGS` entry whose `locales`
-  prefixes match `Qt.locale().name` (`sv_SE.UTF-8` → `sv`; `nb`, `nn` and
-  `no` → `nb`); anything else gives `en`. It is read when the shell starts.
+  prefixes match `Qt.locale().name` (`sv_SE.UTF-8` → `sv`, also `sv_FI`;
+  `nb`, `nn` and `no` → `nb`; `da` → `da`; `fi` → `fi`); anything else
+  gives `en`. It is read when the shell starts.
 - **One place per language:** everything language-specific lives in its
   `STRINGS` entry in `Model.js`, not in code:
   - the UI strings, weekday and month names, compass points, moon phases;
-  - `decimal`: decimal separator (`0,4 mm` in sv and nb, `0.4 mm` in en);
-  - `dayDate`: a date in day titles;
-  - `hour`: the hour unit in short texts (`−1 h`, `/6h`; `t` in nb);
+  - `decimal`: decimal separator (`0,4 mm`; `0.4 mm` in en);
+  - `dayDate`: a date in day titles (`{day}`, `{month}` or `{monthNumber}`);
+  - `hour`: the hour unit in short texts (`−1 h`, `/6h`; `t` in nb and da);
   - `geocode`: the place-search language (`no` for nb, which gives
     Norwegian place names where `nb` doesn't);
   - `precip`: the grammar for precipitation descriptions (below).
@@ -218,14 +220,17 @@ Swedish (`sv`), Norwegian Bokmål (`nb`) and English (`en`).
 - **Dates:**
   - sv: "Idag 26 sep", "Imorgon 27 sep", "Måndag 28 sep"
   - nb: "I dag 26. sep", "I morgen 27. sep", "Mandag 28. sep"
+  - da: "I dag 26. sep", "I morgen 27. sep", "Mandag 28. sep"
+  - fi: "Tänään 26.9.", "Huomenna 27.9.", "Maanantai 28.9."
   - en: "Today Sep 26", "Tomorrow Sep 27", "Monday Sep 28"
 - **Numbers:** temperatures are whole degrees.
 - **Units:** °C, m/s, mm, %. Wind stays in m/s for English too, which matches
   yr.no.
 - **Map labels:** a place name in Latin script is shown as it is (Göteborg,
   not Gothenburg); others use the language's own name from OpenStreetMap
-  (`name:sv`; `name:nb` or `name:no`), then English (`Москва` → Moskva /
-  Moscow).
+  (`name:sv`; `name:nb` or `name:no`; `name:da`; `name:fi`), then English
+  (`Санкт-Петербург` → Sankt Petersburg / Sankt Petersborg / Pietari /
+  Saint Petersburg).
 
 ### Weather descriptions
 
@@ -238,8 +243,10 @@ MET symbol codes are `<base>[_day|_night|_polartwilight]`.
   parts (`light|heavy`, `rain|sleet|snow`, `showers`, `andthunder`) with
   the language's `precip` grammar: nouns per kind as [plain, showers], the
   light/heavy words in the matching form, and a thunder suffix. So
-  `lightrainshowers` is "Lätta regnskurar" / "Lette regnbyger" / "Light
-  rain showers".
+  `lightrainshowers` is "Lätta regnskurar" / "Lette regnbyger" / "Lette
+  regnbyger" (da) / "Heikkoja sadekuuroja" / "Light rain showers". Finnish
+  uses the partitive throughout ("Heikkoa vesisadetta"), and nominative
+  kinds in the nowcast line ("Vesisade alkaa noin 20 min kuluttua").
 - **API typos:** MET really does send the misspelled
   `lightssleetshowersandthunder` and `lightssnowshowersandthunder`. Map both
   to the same entry as the correctly spelled code, and cover them in a test.

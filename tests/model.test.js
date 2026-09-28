@@ -26,6 +26,9 @@ test("language follows locale, English fallback", () => {
   assert.equal(M.langFor("nb_NO"), "nb")
   assert.equal(M.langFor("nn_NO.UTF-8"), "nb")
   assert.equal(M.langFor("no"), "nb")
+  assert.equal(M.langFor("da_DK.UTF-8"), "da")
+  assert.equal(M.langFor("fi_FI"), "fi")
+  assert.equal(M.langFor("fil_PH"), "en")
   assert.equal(M.langFor("en_US"), "en")
   assert.equal(M.langFor("de_DE"), "en")
   assert.equal(M.langFor("svx"), "en")
@@ -69,6 +72,31 @@ test("Norwegian: descriptions, dates, numbers and hours", () => {
   assert.ok(M.geocodeUrl("Bergen", "nb").endsWith("&language=no"))
   const frames = [0, 1, 2].map((h) => ({ timeMs: h * 3600000 }))
   assert.deepEqual(M.rulerTicks(frames, 1, "nb").map((t) => t.stamp), ["\u22121 t", "Nå", "+1 t"])
+})
+
+test("Danish: descriptions, dates and hours", () => {
+  assert.equal(M.describeSymbol("fair_day", "da"), "Let skyet")
+  assert.equal(M.describeSymbol("lightrainshowers_day", "da"), "Lette regnbyger")
+  assert.equal(M.describeSymbol("heavysleetandthunder", "da"), "Kraftig slud og torden")
+  assert.equal(M.describeSymbol("snowshowers_night", "da"), "Snebyger")
+  const today = Date.parse("2026-09-26T00:00:00+02:00")
+  assert.equal(M.dayTitle(Date.parse("2026-09-28T00:00:00+02:00"), today, "da"), "Mandag 28. sep")
+  assert.equal(M.formatNumber(0.4, 1, "da"), "0,4")
+  const frames = [0, 1, 2].map((h) => ({ timeMs: h * 3600000 }))
+  assert.deepEqual(M.rulerTicks(frames, 1, "da").map((t) => t.stamp), ["\u22121 t", "Nu", "+1 t"])
+})
+
+test("Finnish: partitive descriptions, numeric dates", () => {
+  assert.equal(M.describeSymbol("clearsky_day", "fi"), "Selkeää")
+  assert.equal(M.describeSymbol("lightrain", "fi"), "Heikkoa vesisadetta")
+  assert.equal(M.describeSymbol("rainshowers_day", "fi"), "Sadekuuroja")
+  assert.equal(M.describeSymbol("heavysnowshowersandthunder_day", "fi"), "Voimakkaita lumikuuroja ja ukkosta")
+  assert.equal(M.describeSymbol("lightssleetshowersandthunder_night", "fi"), "Heikkoja räntäkuuroja ja ukkosta")
+  const today = Date.parse("2026-09-26T00:00:00+02:00")
+  assert.equal(M.dayTitle(Date.parse("2026-09-28T00:00:00+02:00"), today, "fi"), "Maanantai 28.9.")
+  assert.equal(M.dayTitle(today, today, "fi"), "Tänään 26.9.")
+  assert.equal(M.formatNumber(0.4, 1, "fi"), "0,4")
+  assert.ok(M.geocodeUrl("Oulu", "fi").endsWith("&language=fi"))
 })
 
 test("numbers use a decimal comma in Swedish", () => {

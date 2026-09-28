@@ -63,6 +63,8 @@ PLACE_KINDS = {"city", "town"}
 LABEL_NAMES = {
     "sv": ["name:sv"],
     "nb": ["name:nb", "name:no"],
+    "da": ["name:da"],
+    "fi": ["name:fi"],
     "en": ["name:en"],
 }
 

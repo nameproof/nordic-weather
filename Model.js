@@ -30,7 +30,8 @@ var NOWCAST_BACKGROUND_MS = 15 * 60000
 //   locales:  locale-name prefixes that pick it (the first entry matching
 //             Qt.locale().name wins; English is the fallback)
 //   decimal:  decimal separator
-//   dayDate:  a day's date in titles ({day}, {month} from months)
+//   dayDate:  a day's date in titles ({day}; {month} from months, or
+//             {monthNumber} 1–12)
 //   hour:     the hour unit in short texts ("−1 h", "/6h")
 //   geocode:  language code for place search (Open-Meteo)
 //   precip:   precipitation descriptions (describeSymbol): nouns per kind as
@@ -151,6 +152,123 @@ var STRINGS = {
       partlycloudy: "Delvis skyet",
       cloudy: "Skyet",
       fog: "Tåke"
+    }
+  },
+  da: {
+    locales: ["da"],
+    decimal: ",",
+    dayDate: "{day}. {month}",
+    hour: "t",
+    geocode: "da",
+    precip: {
+      rain: ["regn", "regnbyger"],
+      sleet: ["slud", "sludbyger"],
+      snow: ["sne", "snebyger"],
+      light: ["let", "lette"],
+      heavy: ["kraftig", "kraftige"],
+      thunder: " og torden"
+    },
+    today: "I dag",
+    tomorrow: "I morgen",
+    months: ["jan", "feb", "mar", "apr", "maj", "jun", "jul", "aug", "sep", "okt", "nov", "dec"],
+    weekdays: ["Søndag", "Mandag", "Tirsdag", "Onsdag", "Torsdag", "Fredag", "Lørdag"],
+    weekdaysShort: ["Søn", "Man", "Tir", "Ons", "Tor", "Fre", "Lør"],
+    compass: ["N", "NØ", "Ø", "SØ", "S", "SV", "V", "NV"],
+    moonPhases: ["Nymåne", "Tiltagende månesegl", "Første kvarter", "Tiltagende måne",
+                 "Fuldmåne", "Aftagende måne", "Sidste kvarter", "Aftagende månesegl"],
+    feels: "Føles som",
+    wind: "Vind",
+    humidity: "Fugt",
+    pressure: "Tryk",
+    pressureNext: "på 3 t",
+    moonHigh: "højest",
+    gust: "stød",
+    forecastFrom: "prognose fra",
+    stale: "Forældet",
+    fetching: "Henter prognose…",
+    searchPlaceholder: "Søg sted",
+    noResults: "Ingen steder fundet",
+    noLocation: "Vælg et sted for at se vejret",
+    chooseLocation: "Vælg sted",
+    windLabel: "Vind",
+    precipitation: "Nedbør",
+    rain: "Regn",
+    sleet: "Slud",
+    snow: "Sne",
+    nowcastDry: "Tørvejr de næste {n} min",
+    nowcastWetAll: "{kind} de næste {n} min",
+    nowcastStopping: "{kind} nu, stopper om ca. {n} min",
+    nowcastStarting: "{kind} om ca. {n} min",
+    radar: "Radar",
+    radarLoading: "Henter radar…",
+    radarNow: "Nu",
+    forecastWord: "Prognose",
+    symbols: {
+      clearsky: "Klart",
+      fair: "Let skyet",
+      partlycloudy: "Delvis skyet",
+      cloudy: "Skyet",
+      fog: "Tåge"
+    }
+  },
+  // Finnish. The precipitation words are partitive ("Heikkoa vesisadetta",
+  // "Voimakkaita lumikuuroja"), the nowcast kinds nominative ("Vesisade
+  // alkaa…").
+  fi: {
+    locales: ["fi"],
+    decimal: ",",
+    dayDate: "{day}.{monthNumber}.",
+    hour: "h",
+    geocode: "fi",
+    precip: {
+      rain: ["vesisadetta", "sadekuuroja"],
+      sleet: ["räntäsadetta", "räntäkuuroja"],
+      snow: ["lumisadetta", "lumikuuroja"],
+      light: ["heikkoa", "heikkoja"],
+      heavy: ["voimakasta", "voimakkaita"],
+      thunder: " ja ukkosta"
+    },
+    today: "Tänään",
+    tomorrow: "Huomenna",
+    months: ["tammi", "helmi", "maalis", "huhti", "touko", "kesä", "heinä", "elo", "syys", "loka", "marras", "joulu"],
+    weekdays: ["Sunnuntai", "Maanantai", "Tiistai", "Keskiviikko", "Torstai", "Perjantai", "Lauantai"],
+    weekdaysShort: ["Su", "Ma", "Ti", "Ke", "To", "Pe", "La"],
+    compass: ["P", "KO", "I", "KA", "E", "LO", "L", "LU"],
+    moonPhases: ["Uusikuu", "Kasvava kuunsirppi", "Ensimmäinen neljännes", "Kasvava kuu",
+                 "Täysikuu", "Vähenevä kuu", "Viimeinen neljännes", "Vähenevä kuunsirppi"],
+    feels: "Tuntuu kuin",
+    wind: "Tuuli",
+    humidity: "Kosteus",
+    pressure: "Paine",
+    pressureNext: "/ 3 h",
+    moonHigh: "ylimmillään",
+    gust: "puuskat",
+    forecastFrom: "ennuste klo",
+    stale: "Vanhentunut",
+    fetching: "Haetaan ennustetta…",
+    searchPlaceholder: "Hae paikkaa",
+    noResults: "Paikkoja ei löytynyt",
+    noLocation: "Valitse paikka nähdäksesi sään",
+    chooseLocation: "Valitse paikka",
+    windLabel: "Tuuli",
+    precipitation: "Sade",
+    rain: "Vesisade",
+    sleet: "Räntäsade",
+    snow: "Lumisade",
+    nowcastDry: "Poutaa seuraavat {n} min",
+    nowcastWetAll: "{kind} jatkuu seuraavat {n} min",
+    nowcastStopping: "{kind} nyt, loppuu noin {n} min kuluttua",
+    nowcastStarting: "{kind} alkaa noin {n} min kuluttua",
+    radar: "Tutka",
+    radarLoading: "Ladataan tutkaa…",
+    radarNow: "Nyt",
+    forecastWord: "Ennuste",
+    symbols: {
+      clearsky: "Selkeää",
+      fair: "Melko selkeää",
+      partlycloudy: "Puolipilvistä",
+      cloudy: "Pilvistä",
+      fog: "Sumua"
     }
   },
   en: {
@@ -314,7 +432,7 @@ function dayTitle(dayStartMs, todayStartMs, lang) {
   var d = new Date(dayStartMs)
   var diff = Math.round((dayStartMs - todayStartMs) / DAY_MS)
   var name = diff === 0 ? s.today : diff === 1 ? s.tomorrow : s.weekdays[d.getDay()]
-  return name + " " + fill(s.dayDate, { day: d.getDate(), month: s.months[d.getMonth()] })
+  return name + " " + fill(s.dayDate, { day: d.getDate(), month: s.months[d.getMonth()], monthNumber: d.getMonth() + 1 })
 }
 
 function dayShortName(dayStartMs, todayStartMs, lang) {

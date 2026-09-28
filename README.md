@@ -35,8 +35,9 @@ the data behind yr.no.
   same file the built-in widget uses, so switching between the two keeps it.
   The star on a search result saves that place as a favourite; with the
   search field empty, your favourites are listed for a one-click switch.
-- **Language:** Swedish, Norwegian (Bokmål, also for Nynorsk locales) or
-  English, following the system locale; English for anything else.
+- **Language:** Swedish, Norwegian (Bokmål, also for Nynorsk locales),
+  Danish, Finnish or English, following the system locale; English for
+  anything else.
 
 Enabling the plugin puts it in the built-in widget's place in the bar.
 Disabling or removing it brings the built-in back.
