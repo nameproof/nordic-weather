@@ -14,14 +14,16 @@ behind yr.no). Open-Meteo is used only to search for places.
   "precipitation soon", uncertainty ranges, a 10-day overview, sun and moon.
 - Finds a location the same way as the built-in: click the place name, search,
   pick a result.
-- Swedish when the system locale is `sv*`, English otherwise.
+- In the system's language when it is Swedish, Norwegian, Danish or
+  Finnish, English otherwise.
 - Follows MET's terms of service: User-Agent, caching, no synchronized
   requests, attribution.
 
 ## Non-goals (v1)
 
 - Other weather providers, IP-based auto location, imperial units.
-- Weather warnings. MetAlerts covers Norway only, and the location is in Sweden.
+- Weather warnings. MetAlerts covers Norway only; the other Nordic
+  countries each have their own service.
 
 ## Naming
 
@@ -44,7 +46,9 @@ Model.js         pure functions (.pragma library: one shared copy)
 RadarImages.qml  rotating image providers and staging for loop replacements
 shaders/         radar and base-map shaders (+ compiled .qsb)
 map/             base-map tiles and place names (scripts/build-basemap.py)
-tests/           node tests for Model.js + saved API fixtures
+scripts/         dev-install, build-shaders, lint, build-basemap.py
+tests/           node tests for Model.js, Qt tests (images, service, shader
+                 pixels), saved API fixtures
 README.md, LICENSE
 ```
 
@@ -62,34 +66,12 @@ that opens (`takePendingAction`).
 (the same trick the built-in uses), so `node --test tests/` runs it directly
 (tests/load-model.js strips its `.pragma library` line).
 
-## Manifest (draft)
+## Manifest
 
-```json
-{
-  "schemaVersion": 1,
-  "id": "io.github.nameproof.nordic-weather",
-  "name": "Nordic Weather",
-  "version": "0.1.0",
-  "author": "nameproof",
-  "license": "MIT",
-  "description": "Weather pill and forecast panel using MET Norway data",
-  "kinds": ["service", "bar-widget"],
-  "entryPoints": { "service": "Service.qml", "barWidget": "BarWidget.qml" },
-  "omarchy": { "clonedFrom": "omarchy.weather" },
-  "barWidget": {
-    "displayName": "Weather",
-    "category": "Info",
-    "allowMultiple": false,
-    "defaultSection": "center",
-    "defaults": { "hourStep": 3, "hourlyDays": 3, "longRangeDays": 10 },
-    "schema": [
-      { "key": "hourStep", "type": "integer", "label": "Hour step", "min": 1, "max": 6, "defaultValue": 3 },
-      { "key": "hourlyDays", "type": "integer", "label": "Days with hourly rows", "min": 1, "max": 3, "defaultValue": 3 },
-      { "key": "longRangeDays", "type": "integer", "label": "Days in overview", "min": 0, "max": 10, "defaultValue": 10 }
-    ]
-  }
-}
-```
+`manifest.json` declares the service and the bar widget, the three
+settings below, and `omarchy.clonedFrom: "omarchy.weather"`. Its `version`
+is also in `Model.js` (`VERSION`, sent in the User-Agent); a test checks
+the two and the id match.
 
 `omarchy.clonedFrom` is what makes the shell swap our plugin into the
 built-in's slot, route `omarchy.weather` IPC calls to us, and restore the
@@ -120,7 +102,7 @@ headers and body are captured so `Expires` and `Last-Modified` can be read.
 | yr.no lightning | `www.yr.no/api/v0/lightning-events?fromHours=2` | Only while the radar side panel is open; at most every minute (yr.no caches it for 30 s). Kept in memory, not in the cache file. Undocumented yr.no backend. |
 | Base map | none: `map/tiles/{z}/{x}/{y}.png` and `map/places.json` ship with the plugin | Built from OpenStreetMap by `scripts/build-basemap.py`. |
 | Radar frames | none: assembled locally | Once a view's radar tiles are downloaded, ImageMagick (in Omarchy's base packages) assembles each frame into one map-sized PNG (`f_*.png`, pruned after 2 h). A frame with a tile missing is never written; the loop is only swapped in when every frame exists. Playback then decodes one image per frame instead of 20–25 tiles (≈3× less CPU). |
-| Place search | `geocoding-api.open-meteo.com/v1/search?name&count=6&language=sv\|en` | Typing in the search field, debounced 300 ms, one request in flight |
+| Place search | `geocoding-api.open-meteo.com/v1/search?name&count=6&language=<lang>` | Typing in the search field, debounced 300 ms, one request in flight |
 
 Rules:
 
@@ -131,18 +113,23 @@ Rules:
 - **`offset`:** computed from the local zone *for that date*. Never
   hard-coded, so daylight saving time is right.
 - **Status codes:**
-  - 429: stop fetching until `Expires`, or 10 min if there's none.
-  - 403: show an error state and log the URL.
+  - 429: pause that service's requests (MET's API or yr.no) for 10 min.
+  - 403: log the URL.
   - 203: log a deprecation warning.
-- **Stale data:** on any failure, keep the last good data and mark it
-  `stale: true`. After 3 failed attempts in one cycle, wait for the next timer
-  tick (same as the built-in's retry budget).
-- **Cache:** `~/.cache/io.github.nameproof.nordic-weather/` holds
-  `forecast.json`, `forecast.meta.json` (`expires`, `lastModified`, `lat`,
-  `lon`), `nowcast.*` and `sun-YYYY-MM-DD.json`. On shell start we render from
-  the cache immediately, then refresh if it has expired.
-- **Location change:** throw away the cached forecast, nowcast and sun data
-  when lat/lon changes.
+  - 422 from the nowcast: outside the Nordic radar area; remembered for a
+    day.
+- **Failures:** keep the last good data. A failed request is retried after
+  15 s, doubling up to 15 min. The forecast counts as stale an hour past
+  its `Expires` (see the bar pill).
+- **Cache:** one file, `~/.cache/io.github.nameproof.nordic-weather/cache.json`,
+  shared by every monitor's widget: per request kind, the response body with
+  its URL, `Last-Modified`, `Expires` and fetch time; plus `elevations` (from
+  place search, by coordinates) and `prefs` (the map zoom). On shell start
+  the panel renders from it at once, then refreshes what has expired.
+  Lightning is kept in memory only. Radar tiles and assembled frames live
+  in `tiles/` next to it.
+- **Location change:** responses are cached by URL, so a new place simply
+  fetches its own; nothing of the old place is shown.
 
 ## Location
 
@@ -155,9 +142,9 @@ Rules:
 - **Elevation:** `omarchy-weather-location` only stores
   name/latitude/longitude, so we keep the elevation from the last search in
   our cache dir, keyed by lat,lon.
-- **No location set:** the pill shows a location icon, and the panel shows
-  "Search for a place" / "Sök efter en plats" with the search field already
-  open.
+- **No location set:** the pill shows a location icon, and the panel says
+  "Choose a place to see the weather" / "Välj en plats för att se vädret"
+  with a button that opens the search.
 
 ### Search UI (same behavior as the built-in)
 
@@ -169,8 +156,8 @@ Rules:
    in bold, with `admin1, country` dimmed after it.
 3. ↑/↓ moves the selection, Enter picks the selected row (the first row by
    default), Esc cancels.
-4. ✕ clears the location. While the new place's forecast is loading, the ✕
-   turns into a spinner and the field stays open.
+4. While the picked place's forecast is loading, a spinner shows next to
+   the field, which stays open.
 5. If the search returns nothing, show a "No places found" / "Inga platser
    hittades" row.
 
@@ -259,48 +246,52 @@ monochrome, so it picks up the theme's foreground color.
 
 - **Day or night:** comes from the symbol code's suffix, so no sunrise lookup
   is needed. `_polartwilight` counts as day.
-- **Moon:** clear and fair night icons show the actual moon-phase glyph for
-  the MET `moonphase` (8 buckets).
+- **Moon:** clear and fair nights use a crescent: near full or new moon the
+  phase glyphs are a plain disc or ring, which reads as a glitch in the
+  bar. The footer shows the phase glyph (28 steps) next to its name.
 - **Mapping:** base code → glyph, covering clear, fair, partly cloudy, cloudy,
   fog, and rain, sleet and snow (each plain or showers), plus thunder variants.
   Light and heavy intensity share a glyph; the text carries the intensity.
 
 ## View model
 
-`Model.buildView(forecast, nowcast, sun, moon, location, lang, settings, now)`
-returns a single object. QML only binds to it and never touches raw API JSON.
+`Model.buildView({ forecast, nowcast, sun, moon, location, lang, nowMs,
+settings })` returns a single object. QML only binds to it and never touches
+raw API JSON. List entries carry a `key` (their content) for the panel's
+`ScriptModel`s.
 
 ```js
 {
   lang: "sv",
+  ready: true,
   location: { name: "Alingsås", set: true },
   updatedAt: "14:30",            // MET meta.updated_at, local time
-  stale: false,
   bar: { icon: "", text: " 16°" },   // no hover tooltip: the panel is the detail view
-  now: {
+  current: {
     icon: "", description: "Klart",
     temp: 16, feelsLike: 16,
-    wind: { speed: 5.9, gust: 11.9, dirDeg: 259, dirLabel: "V" },
-    humidity: 55, cloud: 2, fog: 0, uv: 1.4,
-    pressure: { value: 1016, change: -1.4, arrow: "↘", changeText: "−1,4 på 3 h" },   // or null
-    precipNextHour: { amount: "0 mm", min: 0, max: 0, probability: 0 }
+    wind: { speed: 5, gust: 13, dirDeg: 259, dirLabel: "V", arrow: "→" },
+    humidity: 57,
+    pressure: { value: 1016, change: -1.4, arrow: "↘", changeText: "−1,4 på 3 h" }   // or null
   },
-  nowcast: {                      // null when no radar coverage / panel closed
-    summary: "Uppehåll kommande 2 timmar",   // or "Regn om 20 min, ca 40 min"
-    points: [ { t: "14:45", rate: 0.0 }, ... ]   // 5-min steps, for a sparkline
+  nowcast: {                      // null without radar coverage
+    summary: "Uppehåll närmaste 110 min",   // or "Regn om ca 20 min"
+    wet: false,
+    points: [ { minutes: 5, rate: 0.0, kind: "" }, ... ]   // 5-min steps, for the sparkline
   },
   days: [                         // hourlyDays entries
-    { title: "Idag 26 sep", precipGlyph: "",
-      rows: [ { hour: "15", icon: "", description: "Klart", temp: 16,
-                tempRange: [15, 17],           // p10/p90, omitted if span < 2°
-                precip: { probability: 0, amount: "", thunder: 0, kind: "" },   // kind: rain/sleet/snow
-                wind: { speed: 6, gust: 12, dirDeg: 259 } } ] }
+    { start: <ms>, title: "Idag 26 sep", sixHour: false, precipGlyph: "",
+      rows: [ { ms: <ms>, hour: "15", periodHours: 1, icon: "", description: "Klart",
+                temp: 16, tempSpread: 1,           // half the p10–p90 span, 0 if under 2°
+                precip: { probability: 0, text: "", kind: "" },   // kind: rain/sleet/snow
+                wind: { speed: 6, gust: 12, dirDeg: 259, arrow: "→" } } ] }
   ],
-  longRange: [                    // one row per day, up to 10
-    { day: "Mån", icon: "", min: 12, max: 18, precip: "0 mm", precipProbability: 10 }
+  longRange: [                    // one row per day after the hourly ones, up to 10
+    { start: <ms>, day: "Tis", icon: "", min: 12, max: 18, precip: "1,2 mm" }
   ],
+  longRangeScale: { min: 6, max: 20 },   // shared by the 10-day bars
   sun:  { rise: "07:02", set: "18:57" },
-  moon: { phaseDeg: 171, phaseName: "Fullmåne", high: "högst 01:08" },   // high_moon time
+  moon: { icon: "", name: "Fullmåne", illumination: 99, high: "högst 01:08" },
   attribution: "♥ MET Norway"
 }
 ```
@@ -323,8 +314,9 @@ returns a single object. QML only binds to it and never touches raw API JSON.
   - A row is kept when `(local hour % hourStep) == 0` and the step is still in
     the future.
   - Symbol and precipitation come from `next_1_hours` where it exists.
-  - Past about 54 h, where only 6-hour steps exist, rows use `next_6_hours`
-    and the row shows a "6 h" precipitation label instead of "1 h".
+  - The day after tomorrow, and any day where the hourly data runs out
+    part-way (≈54–60 h ahead), is all 6-hour rows on MET's 00/06/12/18 UTC
+    steps, using `next_6_hours`; their amounts get a "/6h" suffix.
 - **Precipitation amount:**
   - 0 shows nothing, under 0.1 shows "<0,1 mm", otherwise one decimal.
   - When min ≠ max, show "0,2–1,4 mm".
@@ -342,7 +334,7 @@ returns a single object. QML only binds to it and never touches raw API JSON.
 
 - **Text:** `<icon> <temp>°`, e.g. ` 16°`. Hidden until the first data or
   cache load (the built-in's `visible: label !== ""` rule).
-- **Stale data:** the pill is dimmed to 60% opacity, and the panel footer
+- **Stale data:** the pill uses the bar's dimmed style, and the panel footer
   says how old the forecast is ("Inaktuell · prognos från 14:30"). Otherwise
   the footer shows no update time.
 - **Clicks:**
@@ -363,12 +355,12 @@ gets taller than the screen allows.
 │                      16°     6 m/s ↗     55%    1016 hPa ↘    │
 │   Klart                      (byar 12)          (−1,4 på 3 h) │
 ├──────────────────────────────────────────────────────────────┤
-│  ☂ Uppehåll kommande 2 timmar          ▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁  │
+│  ☂ Uppehåll närmaste 110 min     ▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁   Radar ›   │
 ├──────────────────────────────────────────────────────────────┤
 │  IDAG 26 SEP                                               │
 │  15    Klart              16°      0%          6 ↗  (12)     │
 │  18    Växlande           14°     10%          4 ↗  ( 9)     │
-│  21    Växlande molnighet 12°     10%          3 →  ( 7)     │
+│  21    Vackert            12°     10%          3 →  ( 7)     │
 │  IMORGON 27 SEP                                               │
 │  00    Mulet              11°     20%  <0,1 mm  3 →  ( 6)     │
 │  03    Lätt regn          10°±2   60%  0,2–1,1  5 ↘  (11)     │
@@ -395,23 +387,26 @@ While searching, the hero's place name becomes the field, and the suggestions
 push the rest of the panel down:
 
 ```
-│                              [ Göteb█                ] ✕     │
-│  ▸ Göteborg          Västra Götalands län, Sverige            │
-│    Göteborgs hamn    Västra Götalands län, Sverige            │
+│                              [ Göteb█                ]       │
+│  ▸ Göteborg          Västra Götalands län, Sverige        ☆   │
+│    Göteborgs hamn    Västra Götalands län, Sverige        ☆   │
 ```
 
 Notes:
 
-- **Hero:** the big icon is the same size as the built-in's (64 px, temperature
-  56 px).
+- **Hero:** condition icon 56 px, temperature 48 px bold, centred on the
+  painted digits.
 - **Temperature ranges** (`10°±2`): only shown when the p10–p90 spread is 2°
   or more.
 - **10-day bars:** each day's min–max is drawn on a scale shared by all
   10 days.
 - **Nowcast row:** hidden when there's no radar coverage. The sparkline sits to
-  the right of the text.
-- **Keyboard:** Tab and Shift+Tab switch to the neighboring panel, and
-  Enter/Esc work as in the built-in (`PanelKeyCatcher`).
+  the right of the text, then the **Radar ›** button.
+- **Keyboard** (`PanelKeyCatcher`): Tab / Shift+Tab switch to the
+  neighbouring panel; Enter opens the search, Esc closes; ↑/↓ (`k`/`j`)
+  scroll; → / `l` opens the radar, ← / `h` closes it; `r` refreshes. With
+  the radar open: `+`/`−` zoom, `,`/`.` step a frame (and pause), `p`
+  pauses or plays.
 
 ## Radar map
 
@@ -519,15 +514,11 @@ canvas over the radar, placed like the location marker:
   - an empty search result
 - **Shader pixels:** `RADAR_RENDER_TESTS=1 npm test` adds an offscreen OpenGL
   RHI check of how rain and no-coverage are drawn.
-- **Lint:** `qmllint -I "$OMARCHY_PATH/shell" *.qml`
-- **Manifest:** `omarchy plugin validate .`
+- **Lint:** `scripts/lint` (qmllint against the installed shell; clean
+  apart from the shell's own objects, which it only knows as `QObject`).
+- **Manifest:** `omarchy-plugin-validate .` (`scripts/dev-install` runs it).
 - **Manual:**
   - Enable the plugin and check it takes the `omarchy.weather` slot.
   - Remove it and check the built-in comes back.
   - Change location from our panel and check the built-in picks up the same
     place.
-
-## Open questions
-
-- Gusts: shown in parentheses in v1. Revisit once the panel can be seen for
-  real. Layout and density are expected to be iterated on visually.

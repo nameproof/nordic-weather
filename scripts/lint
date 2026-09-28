@@ -1,0 +1,27 @@
+#!/bin/bash
+# qmllint the plugin's QML against the installed Omarchy shell. The shell's
+# modules are imported as qs.Commons / qs.Ui, which qmllint only finds under
+# a directory named qs/, so a temporary one points at the shell.
+#
+# Left out: members of the shell's own objects (bar, shell, panel), which
+# qmllint sees only as QObject, and Quickshell's QProcess::ExitStatus type,
+# which it can't resolve.
+set -euo pipefail
+
+SRC="$(cd "$(dirname "$0")/.." && pwd)"
+SHELL_DIR="${OMARCHY_PATH:-/usr/share/omarchy}/shell"
+QMLLINT=${QMLLINT:-/usr/lib/qt6/bin/qmllint}
+
+[[ -d $SHELL_DIR/Commons ]] || { echo "lint: Omarchy shell not found at $SHELL_DIR" >&2; exit 1; }
+paths=$(mktemp -d)
+trap 'rm -rf "$paths"' EXIT
+ln -s "$SHELL_DIR" "$paths/qs"
+
+cd "$SRC"
+out=$("$QMLLINT" -I "$paths" ./*.qml 2>&1 | grep -E '^Warning|^Error' \
+  | grep -v 'not found on type "QObject"' | grep -v 'QProcess::ExitStatus' || true)
+if [[ -n $out ]]; then
+  echo "$out"
+  exit 1
+fi
+echo "lint: clean"

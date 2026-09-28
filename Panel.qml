@@ -1,3 +1,4 @@
+pragma ComponentBehavior: Bound
 import QtQuick
 import Quickshell
 import qs.Commons
@@ -563,12 +564,13 @@ Panel {
                   ] : []
 
                   Column {
+                    id: statColumn
                     required property var modelData
                     spacing: Style.space(4)
 
                     Text {
                       textFormat: Text.PlainText
-                      text: modelData.label.toUpperCase()
+                      text: statColumn.modelData.label.toUpperCase()
                       color: root.dim
                       font.family: root.fontFamily
                       font.pixelSize: Style.font.caption
@@ -576,15 +578,15 @@ Panel {
                     }
                     Text {
                       textFormat: Text.PlainText
-                      text: modelData.value
+                      text: statColumn.modelData.value
                       color: root.fg
                       font.family: root.fontFamily
                       font.pixelSize: Style.font.title
                     }
                     Text {
                       textFormat: Text.PlainText
-                      visible: modelData.sub !== ""
-                      text: modelData.sub
+                      visible: statColumn.modelData.sub !== ""
+                      text: statColumn.modelData.sub
                       color: root.dim
                       font.family: root.fontFamily
                       font.pixelSize: Style.font.caption
@@ -635,16 +637,16 @@ Panel {
                   }
                   Text {
                     textFormat: Text.PlainText
-                    text: modelData.name
+                    text: dropdownRow.modelData.name
                     color: dropdownRow.current ? root.dim
-                      : index === root.suggestionIndex ? Style.hoverStateColor(root.fg, Color.accent) : root.fg
+                      : dropdownRow.index === root.suggestionIndex ? Style.hoverStateColor(root.fg, Color.accent) : root.fg
                     font.family: root.fontFamily
                     font.pixelSize: Style.font.body
                   }
                   Text {
                     textFormat: Text.PlainText
                     visible: text !== ""
-                    text: modelData.description
+                    text: dropdownRow.modelData.description
                     color: root.dim
                     font.family: root.fontFamily
                     font.pixelSize: Style.font.bodySmall
@@ -657,7 +659,7 @@ Panel {
                   anchors.fill: parent
                   hoverEnabled: true
                   cursorShape: Qt.PointingHandCursor
-                  onPositionChanged: root.suggestionIndex = index
+                  onPositionChanged: root.suggestionIndex = dropdownRow.index
                   onClicked: dropdownRow.favorite ? root.pickFavorite(dropdownRow.modelData) : root.pickSuggestion(dropdownRow.modelData)
                 }
                 // Remove a favourite (also Delete on the selected row). Its
@@ -905,9 +907,10 @@ Panel {
               }
 
               Repeater {
-                model: ScriptModel { values: modelData.rows; objectProp: "key" }
+                model: ScriptModel { values: daySection.modelData.rows; objectProp: "key" }
 
                 Row {
+                  id: hourRow
                   required property var modelData
                   x: Style.space(8)
                   width: weatherColumn.width - Style.space(16)
@@ -918,7 +921,7 @@ Panel {
                     width: root.colHour
                     anchors.verticalCenter: parent.verticalCenter
                     textFormat: Text.PlainText
-                    text: modelData.hour
+                    text: hourRow.modelData.hour
                     color: root.dim
                     font.family: root.fontFamily
                     font.pixelSize: Style.font.body
@@ -928,7 +931,7 @@ Panel {
                     anchors.verticalCenter: parent.verticalCenter
                     horizontalAlignment: Text.AlignHCenter
                     textFormat: Text.PlainText
-                    text: modelData.icon
+                    text: hourRow.modelData.icon
                     color: root.fg
                     font.family: root.fontFamily
                     font.pixelSize: Style.font.title
@@ -937,7 +940,7 @@ Panel {
                     width: parent.width - root.colHour - root.colIcon - root.colTemp - root.colPop - root.colAmount - root.colWind - parent.spacing * 6
                     anchors.verticalCenter: parent.verticalCenter
                     textFormat: Text.PlainText
-                    text: modelData.description
+                    text: hourRow.modelData.description
                     elide: Text.ElideRight
                     color: root.fg
                     font.family: root.fontFamily
@@ -948,8 +951,8 @@ Panel {
                     anchors.verticalCenter: parent.verticalCenter
                     horizontalAlignment: Text.AlignRight
                     textFormat: Text.StyledText
-                    text: modelData.temp + "°" + (modelData.tempSpread > 0
-                      ? "<font color=\"" + root.faint + "\">±" + modelData.tempSpread + "</font>"
+                    text: hourRow.modelData.temp + "°" + (hourRow.modelData.tempSpread > 0
+                      ? "<font color=\"" + root.faint + "\">±" + hourRow.modelData.tempSpread + "</font>"
                       : "<font color=\"transparent\">±0</font>")
                     color: root.fg
                     font.family: root.fontFamily
@@ -960,8 +963,8 @@ Panel {
                     anchors.verticalCenter: parent.verticalCenter
                     horizontalAlignment: Text.AlignRight
                     textFormat: Text.PlainText
-                    text: modelData.precip.probability === null ? "" : modelData.precip.probability + "%"
-                    color: modelData.precip.probability >= 30 ? root.fg : root.faint
+                    text: hourRow.modelData.precip.probability === null ? "" : hourRow.modelData.precip.probability + "%"
+                    color: hourRow.modelData.precip.probability >= 30 ? root.fg : root.faint
                     font.family: root.fontFamily
                     font.pixelSize: Style.font.body
                   }
@@ -970,7 +973,7 @@ Panel {
                     anchors.verticalCenter: parent.verticalCenter
                     horizontalAlignment: Text.AlignRight
                     textFormat: Text.PlainText
-                    text: modelData.precip.text + (modelData.precip.text !== "" && modelData.periodHours === 6 ? "/6" + root.t.hour : "")
+                    text: hourRow.modelData.precip.text + (hourRow.modelData.precip.text !== "" && hourRow.modelData.periodHours === 6 ? "/6" + root.t.hour : "")
                     color: root.fg
                     font.family: root.fontFamily
                     font.pixelSize: Style.font.bodySmall
@@ -981,13 +984,13 @@ Panel {
                     width: root.colWind
                     anchors.verticalCenter: parent.verticalCenter
                     spacing: root.windGap
-                    visible: modelData.wind.speed !== null
+                    visible: hourRow.modelData.wind.speed !== null
 
                     Text {
                       width: root.windSpeedWidth
                       horizontalAlignment: Text.AlignRight
                       textFormat: Text.PlainText
-                      text: String(modelData.wind.speed)
+                      text: String(hourRow.modelData.wind.speed)
                       color: root.fg
                       font.family: root.fontFamily
                       font.pixelSize: Style.font.body
@@ -996,14 +999,14 @@ Panel {
                       width: root.windArrowWidth
                       horizontalAlignment: Text.AlignHCenter
                       textFormat: Text.PlainText
-                      text: modelData.wind.arrow
+                      text: hourRow.modelData.wind.arrow
                       color: root.fg
                       font.family: root.fontFamily
                       font.pixelSize: Style.font.body
                     }
                     Text {
                       textFormat: Text.PlainText
-                      text: modelData.wind.gust === null ? "" : "(" + modelData.wind.gust + ")"
+                      text: hourRow.modelData.wind.gust === null ? "" : "(" + hourRow.modelData.wind.gust + ")"
                       color: root.faint
                       font.family: root.fontFamily
                       font.pixelSize: Style.font.body
@@ -1043,7 +1046,7 @@ Panel {
                   width: Style.space(40)
                   anchors.verticalCenter: parent.verticalCenter
                   textFormat: Text.PlainText
-                  text: modelData.day
+                  text: dayRow.modelData.day
                   color: root.dim
                   font.family: root.fontFamily
                   font.pixelSize: Style.font.body
@@ -1053,7 +1056,7 @@ Panel {
                   anchors.verticalCenter: parent.verticalCenter
                   horizontalAlignment: Text.AlignHCenter
                   textFormat: Text.PlainText
-                  text: modelData.icon
+                  text: dayRow.modelData.icon
                   color: root.fg
                   font.family: root.fontFamily
                   font.pixelSize: Style.font.title
@@ -1063,7 +1066,7 @@ Panel {
                   anchors.verticalCenter: parent.verticalCenter
                   horizontalAlignment: Text.AlignRight
                   textFormat: Text.PlainText
-                  text: modelData.min + "°"
+                  text: dayRow.modelData.min + "°"
                   color: root.dim
                   font.family: root.fontFamily
                   font.pixelSize: Style.font.body
@@ -1093,7 +1096,7 @@ Panel {
                   width: Style.space(34)
                   anchors.verticalCenter: parent.verticalCenter
                   textFormat: Text.PlainText
-                  text: modelData.max + "°"
+                  text: dayRow.modelData.max + "°"
                   color: root.fg
                   font.family: root.fontFamily
                   font.pixelSize: Style.font.body
@@ -1103,7 +1106,7 @@ Panel {
                   anchors.verticalCenter: parent.verticalCenter
                   horizontalAlignment: Text.AlignRight
                   textFormat: Text.PlainText
-                  text: modelData.precip
+                  text: dayRow.modelData.precip
                   color: root.fg
                   font.family: root.fontFamily
                   font.pixelSize: Style.font.bodySmall
@@ -1453,6 +1456,7 @@ Panel {
             model: ScriptModel { values: root.mapLabels; objectProp: "key" }
 
             Item {
+              id: placeLabel
               required property var modelData
               x: modelData.x
               y: modelData.y
@@ -1460,7 +1464,7 @@ Panel {
               Rectangle {
                 x: -width / 2
                 y: -height / 2
-                width: modelData.capital ? 5 : 4
+                width: placeLabel.modelData.capital ? 5 : 4
                 height: width
                 radius: width / 2
                 color: root.dim
@@ -1469,13 +1473,13 @@ Panel {
                 x: 6
                 y: -height / 2
                 textFormat: Text.PlainText
-                text: modelData.text
+                text: placeLabel.modelData.text
                 color: root.dim
                 style: Text.Outline
                 styleColor: root.mapLand
                 font.family: root.fontFamily
                 font.pixelSize: Style.font.bodySmall
-                font.bold: modelData.capital
+                font.bold: placeLabel.modelData.capital
               }
             }
           }
@@ -1640,6 +1644,7 @@ Panel {
               model: [{ label: "+", delta: 1 }, { label: "−", delta: -1 }]
 
               Rectangle {
+                id: zoomButton
                 required property var modelData
                 readonly property bool enabledStep: modelData.delta > 0
                   ? root.mapStep < Model.MAP_ZOOM_STEPS.length - 1
@@ -1655,7 +1660,7 @@ Panel {
                 Text {
                   anchors.centerIn: parent
                   textFormat: Text.PlainText
-                  text: modelData.label
+                  text: zoomButton.modelData.label
                   color: root.fg
                   font.family: root.fontFamily
                   font.pixelSize: Style.font.title
@@ -1664,8 +1669,8 @@ Panel {
                   id: zoomArea
                   anchors.fill: parent
                   hoverEnabled: true
-                  cursorShape: enabledStep ? Qt.PointingHandCursor : Qt.ArrowCursor
-                  onClicked: root.zoomMap(modelData.delta)
+                  cursorShape: zoomButton.enabledStep ? Qt.PointingHandCursor : Qt.ArrowCursor
+                  onClicked: root.zoomMap(zoomButton.modelData.delta)
                 }
               }
             }

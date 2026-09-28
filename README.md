@@ -4,8 +4,7 @@ A bar widget for the [Omarchy](https://omarchy.org) shell that replaces the
 built-in weather widget with forecasts from [MET Norway](https://api.met.no),
 the data behind yr.no.
 
-- **Bar:** the condition icon and the temperature. At night, clear skies show
-  the actual moon phase.
+- **Bar:** the condition icon and the temperature.
 - **Panel:**
   - Current conditions: feels-like temperature, wind with direction and
     gusts, humidity, and air pressure with its trend over the next 3 hours.
@@ -15,20 +14,19 @@ the data behind yr.no.
   - Hourly rows for three days, showing forecast uncertainty (`12°±2`,
     `0–0,3 mm`).
   - A 10-day overview with temperature bars.
-  - Sunrise and sunset, moon phase, and when the moon is highest.
+  - Sunrise and sunset, the moon phase, and when the moon is highest.
 - **Radar map:** a side panel with a map in your theme's colours and
   yr.no's radar every 5 minutes for the last 1½ hours plus a 2-hour
   forecast. Zoomed out it shows the whole Nordic radar area; zoomed in it
   follows your location but never leaves the radar's coverage, and areas
   without radar are dimmed. On dark themes the rain is redrawn so heavier
-  rain is brighter, rather than light rain standing out most. Zoom with
-  + / − or the mouse wheel; click the map to pause. A ruler along the
-  bottom shows where the loop is, with
-  −1 h / Nu / +1 h marked under the map; drag it to scrub, hover it for the
-  exact time. Lightning strikes flash up as bolts in the frame they happen
-  in and leave a dot for ten minutes. The base map ships with the plugin
-  (see below); the radar tiles and lightning come from yr.no's
-  undocumented backend, so those parts may break if yr.no changes it.
+  rain is brighter, rather than light rain standing out most. Lightning
+  strikes flash up as bolts in the frame they happen in and leave a dot
+  for ten minutes. A ruler along the bottom shows where the loop is, with
+  −1 h / Nu / +1 h marked under the map; drag it to scrub, hover it for
+  the exact time. The base map ships with the plugin (see below); the
+  radar tiles and lightning come from yr.no's undocumented backend, so
+  those parts may break if yr.no changes it.
 
   Nothing is downloaded or drawn until the side panel is open.
 - **Location:** click the place name and search. The location is saved in the
@@ -58,6 +56,10 @@ omarchy plugin add https://github.com/nameproof/omarchy-nordic-weather.git --ena
 | Click the place name, or Enter in the panel | Search for a location, or pick a favourite |
 | Click the ☆ / ★ on a search result | Add or remove that place as a favourite |
 | Click **Radar ›**, or → / `l` in the panel (← / `h` closes) | Show the radar map beside the forecast |
+| `+` / `−` or the mouse wheel on the map | Zoom the radar map |
+| Click the map, or `p` | Pause or play the radar loop |
+| `,` / `.` | Step the radar loop back or forward a frame |
+| ↑ / ↓ (`k` / `j`), Tab | Scroll the panel, switch to the neighbouring panel |
 | `omarchy-shell omarchy.weather toggle` / `edit` / `refresh` / `radar` | The same, from a keybind |
 | `omarchy-shell omarchy.weather favorite next` / `favorite previous` | Switch to the next or previous favourite |
 
@@ -95,7 +97,7 @@ RADAR_RENDER_TESTS=1 npm test # also check shader pixels with offscreen OpenGL
 scripts/build-shaders       # compile shaders/*.frag to .qsb (dev-install runs it)
 scripts/dev-install         # copy into ~/.config/omarchy/plugins/ (hot-reloads)
 scripts/dev-install --enable
-/usr/lib/qt6/bin/qmllint -I "$OMARCHY_PATH/shell" BarWidget.qml Panel.qml Service.qml
+scripts/lint                # qmllint against the installed Omarchy shell
 ```
 
 The shell notices changed plugin files but keeps using the widget's

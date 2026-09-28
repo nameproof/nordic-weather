@@ -75,7 +75,6 @@ var STRINGS = {
     noResults: "Inga platser hittades",
     noLocation: "Välj en plats för att se vädret",
     chooseLocation: "Välj plats",
-    windLabel: "Vind",
     precipitation: "Nederbörd",
     rain: "Regn",
     sleet: "Snöblandat regn",
@@ -133,7 +132,6 @@ var STRINGS = {
     noResults: "Fant ingen steder",
     noLocation: "Velg et sted for å se været",
     chooseLocation: "Velg sted",
-    windLabel: "Vind",
     precipitation: "Nedbør",
     rain: "Regn",
     sleet: "Sludd",
@@ -190,7 +188,6 @@ var STRINGS = {
     noResults: "Ingen steder fundet",
     noLocation: "Vælg et sted for at se vejret",
     chooseLocation: "Vælg sted",
-    windLabel: "Vind",
     precipitation: "Nedbør",
     rain: "Regn",
     sleet: "Slud",
@@ -250,7 +247,6 @@ var STRINGS = {
     noResults: "Paikkoja ei löytynyt",
     noLocation: "Valitse paikka nähdäksesi sään",
     chooseLocation: "Valitse paikka",
-    windLabel: "Tuuli",
     precipitation: "Sade",
     rain: "Vesisade",
     sleet: "Räntäsade",
@@ -307,7 +303,6 @@ var STRINGS = {
     noResults: "No places found",
     noLocation: "Choose a place to see the weather",
     chooseLocation: "Choose place",
-    windLabel: "Wind",
     precipitation: "Precipitation",
     rain: "Rain",
     sleet: "Sleet",
@@ -484,6 +479,12 @@ function geocodeUrl(query, lang) {
 
 // argv for one request. `-D -` puts the response headers ahead of the body
 // on stdout so Expires / Last-Modified reach parseHttpResponse.
+// Which service a request kind goes to: yr.no's radar and lightning, or
+// MET's API (forecast, nowcast, sun, moon). Throttling is per service.
+function requestService(kind) {
+  return kind === "yrObs" || kind === "yrNow" || kind === "lightning" ? "yr" : "met"
+}
+
 function curlCommand(url, lastModified, maxTime) {
   var cmd = ["curl", "-sS", "--compressed", "--max-time", String(maxTime || 10),
              "-A", USER_AGENT, "-D", "-"]
@@ -572,10 +573,6 @@ function describeSymbol(code, lang) {
 function precipKind(code) {
   var p = parsePrecipBase(splitSymbol(code).base)
   return p ? p.kind : ""
-}
-
-function isNightSymbol(code) {
-  return splitSymbol(code).variant === "night"
 }
 
 // Nerd Font "weather" glyphs (Weather Icons). The 28 moon phases are
@@ -934,9 +931,7 @@ function buildCurrent(forecast, nowcast, nowMs, lang) {
     if (isNum(n.relative_humidity)) values.humidity = n.relative_humidity
   }
 
-  var pd = period ? period.details : {}
   return {
-    symbol: symbol,
     icon: iconForSymbol(symbol),
     description: describeSymbol(symbol, lang),
     temp: roundTemp(values.temp),
@@ -949,14 +944,7 @@ function buildCurrent(forecast, nowcast, nowMs, lang) {
       arrow: windArrow(values.windDir)
     },
     humidity: isNum(values.humidity) ? Math.round(values.humidity) : null,
-    pressure: buildPressure(forecast, nowMs, lang),
-    cloud: isNum(d.cloud_area_fraction) ? Math.round(d.cloud_area_fraction) : null,
-    uv: isNum(d.ultraviolet_index_clear_sky) ? formatNumber(d.ultraviolet_index_clear_sky, 1, lang) : "",
-    precip: {
-      hours: period ? period.hours : 1,
-      text: formatPrecip(pd.precipitation_amount, pd.precipitation_amount_min, pd.precipitation_amount_max, lang),
-      probability: isNum(pd.probability_of_precipitation) ? Math.round(pd.probability_of_precipitation) : null
-    }
+    pressure: buildPressure(forecast, nowMs, lang)
   }
 }
 
@@ -977,7 +965,6 @@ function buildRow(step, lang, sixHour) {
     precip: {
       probability: isNum(pd.probability_of_precipitation) ? Math.round(pd.probability_of_precipitation) : null,
       text: formatPrecip(pd.precipitation_amount, pd.precipitation_amount_min, pd.precipitation_amount_max, lang),
-      thunder: isNum(pd.probability_of_thunder) ? Math.round(pd.probability_of_thunder) : 0,
       kind: precipKind(period ? period.symbol : "")
     },
     wind: {
@@ -1058,7 +1045,7 @@ function buildLongRange(forecast, nowMs, dayCount, lang, skipStarts) {
     var key = localDateKey(ms)
     if (!byDay[key]) {
       byDay[key] = { start: localDayStart(ms, 0), min: Infinity, max: -Infinity,
-                     precip: 0, hasPeriod: false, pop: null, noon: null, noonDist: Infinity }
+                     precip: 0, hasPeriod: false, noon: null, noonDist: Infinity }
       order.push(key)
     }
     return byDay[key]
@@ -1075,8 +1062,6 @@ function buildLongRange(forecast, nowMs, dayCount, lang, skipStarts) {
       var d6 = s.period6.details
       if (isNum(d6.air_temperature_min)) day.min = Math.min(day.min, d6.air_temperature_min)
       if (isNum(d6.air_temperature_max)) day.max = Math.max(day.max, d6.air_temperature_max)
-      if (isNum(d6.probability_of_precipitation))
-        day.pop = Math.max(day.pop === null ? 0 : day.pop, d6.probability_of_precipitation)
       var dist = Math.abs(localHour(s.ms) + 3 - 12)  // centre of the 6 h window vs noon
       if (dist < day.noonDist) { day.noonDist = dist; day.noon = s.period6.symbol }
     }
@@ -1100,11 +1085,9 @@ function buildLongRange(forecast, nowMs, dayCount, lang, skipStarts) {
       day: dayShortName(entry.start, todayStart, lang),
       // A day overview reads as daytime even when only night periods are left.
       icon: iconForSymbol(splitSymbol(entry.noon || "").base + "_day"),
-      description: describeSymbol(entry.noon || "", lang),
       min: roundTemp(entry.min),
       max: roundTemp(entry.max),
-      precip: entry.precip >= 0.05 ? formatNumber(entry.precip, 1, lang) + " mm" : "",
-      precipProbability: entry.pop === null ? null : Math.round(entry.pop)
+      precip: entry.precip >= 0.05 ? formatNumber(entry.precip, 1, lang) + " mm" : ""
     })
   }
   return out
@@ -1164,9 +1147,7 @@ function buildNowcast(nowcast, nowMs, lang) {
     }
   }
 
-  var maxRate = 0
-  for (var r = 0; r < points.length; r++) maxRate = Math.max(maxRate, points[r].rate)
-  return { summary: summary, wet: firstWet >= 0, points: points, maxRate: maxRate }
+  return { summary: summary, wet: firstWet >= 0, points: points }
 }
 
 function buildSun(sun) {
@@ -1179,7 +1160,6 @@ function buildMoon(moon, nowMs, lang) {
   if (!moon) return null
   var phase = moonPhaseAt(moon, nowMs)
   return {
-    phaseDeg: Math.round(phase),
     icon: moonGlyph(phase),
     name: strings(lang).moonPhases[moonPhaseIndex(phase)],
     // Share of the disc that is lit: 0 % at new moon, 100 % at full.
@@ -1810,7 +1790,7 @@ function notification(view) {
   var c = view.current
   var headline = (view.location.name ? view.location.name + "  ·  " : "") + c.description + " " + c.temp + "°"
   var body = []
-  if (c.wind.speed !== null) body.push(s.windLabel + " " + c.wind.speed + " m/s " + c.wind.dirLabel)
+  if (c.wind.speed !== null) body.push(s.wind + " " + c.wind.speed + " m/s " + c.wind.dirLabel)
   if (view.nowcast) body.push(view.nowcast.summary)
   return { glyph: c.icon, headline: headline, body: body.join("  ·  ") }
 }
@@ -1818,6 +1798,7 @@ function notification(view) {
 if (typeof module !== "undefined") {
   module.exports = {
     PLUGIN_ID: PLUGIN_ID,
+    VERSION: VERSION,
     YR_RADAR_OBS_INDEX: YR_RADAR_OBS_INDEX,
     YR_RADAR_NOWCAST_INDEX: YR_RADAR_NOWCAST_INDEX,
     YR_RADAR_ZOOM: YR_RADAR_ZOOM,
@@ -1873,6 +1854,7 @@ if (typeof module !== "undefined") {
     moonUrl: moonUrl,
     geocodeUrl: geocodeUrl,
     curlCommand: curlCommand,
+    requestService: requestService,
     parseHttpResponse: parseHttpResponse,
     isFresh: isFresh,
     cacheEntryFromResponse: cacheEntryFromResponse,
@@ -1880,7 +1862,6 @@ if (typeof module !== "undefined") {
     splitSymbol: splitSymbol,
     describeSymbol: describeSymbol,
     precipKind: precipKind,
-    isNightSymbol: isNightSymbol,
     moonGlyph: moonGlyph,
     iconForSymbol: iconForSymbol,
     windCompass: windCompass,

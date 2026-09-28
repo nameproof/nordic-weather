@@ -1,3 +1,4 @@
+pragma ComponentBehavior: Bound
 import QtQuick
 import Quickshell
 import Quickshell.Io
@@ -103,7 +104,9 @@ Scope {
   // Spread refreshes out after each Expires (MET asks for no synchronised
   // traffic). Fixed per session so it doesn't drift per tick.
   readonly property int refreshJitterMs: Model.jitterMs()
-  property double backoffUntil: 0
+  // After a 429, requests to that service ("met" or "yr", Model.requestService)
+  // pause until this time.
+  property var backoffUntil: ({ met: 0, yr: 0 })
   property var failures: ({})
 
   // Parsed bodies, reused until the cached body changes.
@@ -223,15 +226,16 @@ Scope {
   function maybeFetch(force) {
     if (!hasLocation || !cacheLoaded || offline) return
     var now = Date.now()
-    if (now < backoffUntil) return
     var urls = requestUrls()
-    startFetch(forecastProc, "forecast", urls.forecast, force || isDue("forecast", urls.forecast, now))
-    startFetch(sunProc, "sun", urls.sun, isDue("sun", urls.sun, now))
-    startFetch(moonProc, "moon", urls.moon, isDue("moon", urls.moon, now))
-    // A cached 422 (outside radar coverage) has an empty body; forcing won't change that.
-    var nowcastCovered = !cache.nowcast || cache.nowcast.key !== urls.nowcast || cache.nowcast.body !== ""
-    startFetch(nowcastProc, "nowcast", urls.nowcast, (force && nowcastCovered) || isDue("nowcast", urls.nowcast, now))
-    if (yrRadarActive) {
+    if (now >= backoffUntil.met) {
+      startFetch(forecastProc, "forecast", urls.forecast, force || isDue("forecast", urls.forecast, now))
+      startFetch(sunProc, "sun", urls.sun, isDue("sun", urls.sun, now))
+      startFetch(moonProc, "moon", urls.moon, isDue("moon", urls.moon, now))
+      // A cached 422 (outside radar coverage) has an empty body; forcing won't change that.
+      var nowcastCovered = !cache.nowcast || cache.nowcast.key !== urls.nowcast || cache.nowcast.body !== ""
+      startFetch(nowcastProc, "nowcast", urls.nowcast, (force && nowcastCovered) || isDue("nowcast", urls.nowcast, now))
+    }
+    if (yrRadarActive && now >= backoffUntil.yr) {
       startFetch(yrObsProc, "yrObs", Model.YR_RADAR_OBS_INDEX, force || isDue("yrObs", Model.YR_RADAR_OBS_INDEX, now))
       startFetch(yrNowProc, "yrNow", Model.YR_RADAR_NOWCAST_INDEX, force || isDue("yrNow", Model.YR_RADAR_NOWCAST_INDEX, now))
       startFetch(lightningProc, "lightning", Model.YR_LIGHTNING_URL, force || isDue("lightning", Model.YR_LIGHTNING_URL, now))
@@ -296,8 +300,11 @@ Scope {
       // Outside the Nordic radar area: remember that for a day.
       setCacheEntry(kind, { key: url, body: "", lastModified: "", expiresMs: now + 24 * 3600000, fetchedMs: now })
     } else if (response.status === 429) {
-      console.warn("nordic-weather: throttled by api.met.no (429), pausing requests")
-      backoffUntil = now + 10 * 60000
+      var service = Model.requestService(kind)
+      console.warn("nordic-weather: throttled by " + service + " (429), pausing its requests for 10 min")
+      var next = Object.assign({}, backoffUntil)
+      next[service] = now + 10 * 60000
+      backoffUntil = next
       recordFailure(kind, url, "HTTP 429")
     } else {
       if (response.status === 403) console.warn("nordic-weather: 403 Forbidden for " + url)
@@ -648,7 +655,8 @@ Scope {
   }
 
   function maybeDownloadYrTiles() {
-    if (!yrRadarActive || yrRadarKey === "" || yrRadarProc.running || yrRetry.running) return
+    if (!yrRadarActive || yrRadarKey === "" || yrRadarProc.running || yrRetry.running
+        || Date.now() < backoffUntil.yr) return
     if (yrRadarNowDoneKey !== yrRadarKey) {
       yrRadarProc.key = yrRadarKey + "|now"
       yrRadarProc.command = Model.tileDownloadCommand(tilesDir, Model.radarDownloads(yrRadarTiles, [yrNowFrame]))

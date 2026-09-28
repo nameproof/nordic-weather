@@ -6,6 +6,7 @@ const path = require("node:path")
 const M = require("./load-model.js")
 
 const fixture = (name) => fs.readFileSync(path.join(__dirname, "fixtures", name), "utf8")
+const repoFile = (name) => fs.readFileSync(path.join(__dirname, "..", name), "utf8")
 const alingsas = M.parseTimeseries(fixture("forecast-alingsas.json"))
 const bergen = M.parseTimeseries(fixture("forecast-bergen.json"))
 const singapore = M.parseTimeseries(fixture("forecast-singapore.json"))
@@ -337,7 +338,7 @@ test("day precipitation glyph follows the most likely kind", () => {
 })
 
 test("hourly rows carry precipitation, spread and wind", () => {
-  const days = M.buildHourlyDays(bergen, Date.parse(bergen.steps[0].ms ? new Date(bergen.steps[0].ms).toISOString() : 0), 1, 3, "sv")
+  const days = M.buildHourlyDays(bergen, bergen.steps[0].ms, 1, 3, "sv")
   const rows = days.flatMap((d) => d.rows)
   const wet = rows.find((r) => r.precip.text !== "")
   assert.ok(wet, "Bergen fixture should have precipitation")
@@ -881,4 +882,18 @@ test("favourites: toggle, remove, rows and stepping", () => {
   assert.equal(M.stepFavorite(three, { name: "X", latitude: 1, longitude: 1 }, 1).name, "Alingsås")
   assert.equal(M.stepFavorite([a], a, 1), null)
   assert.equal(M.stepFavorite([], a, 1), null)
+})
+
+// The User-Agent (MET's terms) carries the version; it must match the
+// manifest's, as must the plugin id.
+test("version and id match the manifest", () => {
+  const manifest = JSON.parse(repoFile("manifest.json"))
+  assert.equal(M.VERSION, manifest.version)
+  assert.equal(M.PLUGIN_ID, manifest.id)
+  assert.ok(M.USER_AGENT.startsWith(manifest.id + "/" + manifest.version + " "))
+})
+
+test("requests are throttled per service", () => {
+  for (const kind of ["forecast", "nowcast", "sun", "moon"]) assert.equal(M.requestService(kind), "met")
+  for (const kind of ["yrObs", "yrNow", "lightning"]) assert.equal(M.requestService(kind), "yr")
 })
