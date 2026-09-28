@@ -6,13 +6,13 @@ const os = require("node:os")
 const { spawnSync, execFileSync } = require("node:child_process")
 const M = require("./load-model")
 
-test("Quickshell: service prepares, publishes, pauses, reuses and bounds retries", {
+test("Quickshell: service publishes, pauses, replaces loops, loads progressively and bounds retries", {
   skip: !fs.existsSync("/usr/bin/qs") || !fs.existsSync("/usr/share/omarchy/shell/Commons")
     || !fs.existsSync("/usr/bin/magick") ? "Quickshell, Omarchy and ImageMagick required" : false
 }, () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "nordic-radar-service-"))
   try {
-    for (const file of ["Service.qml", "RadarImages.qml", "Model.js", "Flow.mjs", "FlowWorker.mjs"])
+    for (const file of ["Service.qml", "RadarImages.qml", "Model.js"])
       fs.copyFileSync(path.join(__dirname, "..", file), path.join(dir, file))
     fs.copyFileSync(path.join(__dirname, "qml", "service.qml"), path.join(dir, "shell.qml"))
     fs.symlinkSync("/usr/share/omarchy/shell/Commons", path.join(dir, "Commons"))

@@ -7,19 +7,15 @@ const { spawnSync, execFileSync } = require("node:child_process")
 
 // Opt in: a real Qt RHI renderer is required, unlike the software-backed
 // image/service tests. Keep this runnable without opening a desktop window.
-test("Qt RHI: radar pixels preserve brightness and respect flow confidence", {
+test("Qt RHI: radar rain and no-coverage pixels", {
   skip: process.env.RADAR_RENDER_TESTS !== "1" ? "set RADAR_RENDER_TESTS=1 with Qt Quick Test and OpenGL available" : false
 }, () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "nordic-radar-render-"))
   try {
     fs.copyFileSync(path.join(__dirname, "qml", "tst_Render.qml"), path.join(dir, "tst_Render.qml"))
-    fs.copyFileSync(path.join(__dirname, "..", "shaders", "radar-smooth.frag.qsb"), path.join(dir, "radar.qsb"))
-    for (const [name, x] of [["a", 16], ["b", 32]])
-      execFileSync("magick", ["-size", "64x64", "xc:black", "-fill", "blue", "-draw",
-        `rectangle ${x},16 ${x + 15},47`, path.join(dir, name + ".png")])
+    fs.copyFileSync(path.join(__dirname, "..", "shaders", "radar.frag.qsb"), path.join(dir, "radar.qsb"))
+    execFileSync("magick", ["-size", "64x64", "xc:black", "-fill", "blue", "-draw", "rectangle 16,16 31,47", path.join(dir, "a.png")])
     execFileSync("magick", ["-size", "64x64", "xc:black", "-fill", "white", "-draw", "rectangle 0,0 31,63", path.join(dir, "c.png")])
-    for (const [name, dx, confidence] of [["flow", 16, 255], ["fade", 16, 0], ["mixed", 16, 102], ["edge", 48, 255]])
-      fs.writeFileSync(path.join(dir, name + ".ppm"), `P3\n1 1\n255\n${128 + dx * 2} 128 ${confidence}\n`)
     const runtime = path.join(dir, "runtime")
     fs.mkdirSync(runtime, { mode: 0o700 })
     const result = spawnSync("/usr/lib/qt6/bin/qmltestrunner", ["-input", dir, "-nocrashhandler"], {

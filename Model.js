@@ -1141,18 +1141,6 @@ function radarFrames(obsText, nowcastText) {
   return { frames: frames, nowIndex: obs.length - 1 }
 }
 
-// The frame the radar loop shows after `current` (count frames, `limit` of
-// them on disk): the next one, the first again after the last, or
-// `current` while the next is still downloading. A frame left over from
-// another, shorter loop restarts at the first.
-function radarNextFrame(current, count, limit) {
-  if (count <= 0) return 0
-  var cur = Math.min(current, count - 1)
-  if (cur >= limit) return 0
-  var next = cur + 1 >= count ? 0 : cur + 1
-  return next !== 0 && next >= limit ? cur : next
-}
-
 // Three rotating image slots give the next frame a whole source-frame
 // interval to load before it is sampled. Two-frame loops use two slots.
 // `ready`: of a loop still loading, the frames assembled so far (a prefix);
@@ -1190,38 +1178,6 @@ function radarAdvance(frame, tick, phaseMs, elapsedMs, count, ready) {
 function radarFrameAt(frames, timeMs) {
   for (var i = 0; i < frames.length; i++) if (frames[i].timeMs >= timeMs) return i
   return 0
-}
-
-function radarCanBlend(frames, current, upcoming) {
-  return upcoming === current + 1 && !!frames[current] && !!frames[upcoming]
-    && frames[upcoming].timeMs - frames[current].timeMs === 300000
-}
-
-// Rain-strength images of a loop's frames for Flow.mjs, w×h each (a
-// quarter of the map), as raw 8-bit grey in base64 on stdout: ImageMagick's
-// HCL chroma (rain is a saturated colour; black "no rain" and white "no
-// coverage" are both 0).
-function flowInputCommand(dir, files, w, h) {
-  // Resize each input before opening the next. Cache the small, lossless
-  // analysis image as well: overlapping loops need not decode it again.
-  // A single ImageMagick process fills all misses, with bounded threading.
-  var script = 'set -euo pipefail\ncd "$1"; w=$2; h=$3; shift 3\n'
-    + 'args=(); outputs=(); missing=()\n'
-    + 'for f in "$@"; do\n'
-    + '  out="a_v2_${w}_${h}_${f%.png}.gray"; outputs+=("$out")\n'
-    + '  if [[ ! -s $out ]] || [[ $(stat -c%s "$out") != $((w * h)) ]]; then\n'
-    + '    missing+=("$out")\n'
-    + '    args+=("(" "$f" -resize "${w}x${h}!" -colorspace HCL -channel G -separate +channel -depth 8 -write "gray:$out.part" +delete ")")\n'
-    + '  fi\n'
-    + 'done\n'
-    + 'if (( ${#missing[@]} )); then\n'
-    + '  magick -limit thread 2 "${args[@]}" -exit\n'
-    + '  for out in "${missing[@]}"; do [[ $(stat -c%s "$out.part") == $((w * h)) ]]; mv -f "$out.part" "$out"; done\n'
-    + 'fi\n'
-    + 'if (( ${#outputs[@]} )); then cat "${outputs[@]}" | base64 -w0; touch "${outputs[@]}"; fi\n'
-    + 'find . -name "a_v2_*.gray*" -mmin +120 -delete 2>/dev/null\n'
-    + 'find . -name "flow_*.ppm" -mmin +120 -delete 2>/dev/null\n'
-  return ["bash", "-c", script, "bash", dir, String(w), String(h)].concat(files)
 }
 
 // The time ruler on the yr.no map: one tick per frame. level is 1 at "now"
@@ -1448,12 +1404,9 @@ if (typeof module !== "undefined") {
     radarDownloads: radarDownloads,
     radarFramesKey: radarFramesKey,
     rulerTicks: rulerTicks,
-    radarNextFrame: radarNextFrame,
     radarImageSlots: radarImageSlots,
     radarAdvance: radarAdvance,
-    radarCanBlend: radarCanBlend,
     radarFrameAt: radarFrameAt,
-    flowInputCommand: flowInputCommand,
     mapViewKey: mapViewKey,
     radarFrameFile: radarFrameFile,
     frameComposeSpecs: frameComposeSpecs,

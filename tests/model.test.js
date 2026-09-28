@@ -631,46 +631,6 @@ test("time ruler: tallest at now, falling off to both ends, hours marked", () =>
   assert.deepEqual(M.rulerTicks([frames[0]], 0).map((t) => t.level), [1])
 })
 
-test("radar loop: next frame, wrap, hold while downloading, restart when left over", () => {
-  assert.equal(M.radarNextFrame(0, 5, 5), 1)
-  assert.equal(M.radarNextFrame(4, 5, 5), 0)          // the seam: back to the first
-  assert.equal(M.radarNextFrame(2, 5, 3), 2)          // frame 3 not on disk yet: hold
-  assert.equal(M.radarNextFrame(2, 5, 4), 3)
-  assert.equal(M.radarNextFrame(7, 5, 5), 0)          // from a longer loop
-  assert.equal(M.radarNextFrame(3, 5, 2), 0)          // past what is on disk
-})
-
-test("flow input: one magick call over the loop's frames, raw grey in base64", { skip: !fs.existsSync("/usr/bin/magick") && "ImageMagick not installed" }, () => {
-  const { execFileSync } = require("node:child_process")
-  const os = require("node:os")
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "met-flowin-"))
-  // Rain (saturated blue) on black, and white "no coverage".
-  execFileSync("magick", ["-size", "16x8", "xc:black", "-fill", "#3050ff", "-draw", "rectangle 0,0 7,7", path.join(dir, "f_a.png")])
-  execFileSync("magick", ["-size", "16x8", "xc:white", path.join(dir, "f_b.png")])
-  const cmd = M.flowInputCommand(dir, ["f_a.png", "f_b.png"], 4, 2)
-  const out = Buffer.from(execFileSync(cmd[0], cmd.slice(1)).toString(), "base64")
-  // Two 4×2 images: rain on the left half of the first, none in the second.
-  assert.equal(out.length, 16)
-  const first = Array.from(out.subarray(0, 8)), second = Array.from(out.subarray(8, 16))
-  assert.ok(first[0] > 100 && first[4] > 100 && first[3] < 10 && first[7] < 10, `first ${first}`)
-  assert.deepEqual(second, [0, 0, 0, 0, 0, 0, 0, 0])
-  // It must be identical to the original all-images-first conversion.
-  const original = execFileSync("magick", [path.join(dir, "f_a.png"), path.join(dir, "f_b.png"),
-    "-resize", "4x2!", "-colorspace", "HCL", "-channel", "G", "-separate", "+channel", "-depth", "8", "gray:-"])
-  assert.deepEqual(out, original)
-  // A second loop reuses analysis pixels without launching ImageMagick.
-  const bin = path.join(dir, "bin")
-  fs.mkdirSync(bin)
-  fs.writeFileSync(path.join(bin, "magick"), "#!/bin/sh\nexit 99\n", { mode: 0o755 })
-  const warm = execFileSync(cmd[0], cmd.slice(1), { env: { ...process.env, PATH: bin + ":" + process.env.PATH } })
-  assert.deepEqual(Buffer.from(warm.toString(), "base64"), out)
-  // Truncated cache entries are regenerated, not sent to the worker.
-  fs.writeFileSync(path.join(dir, "a_v2_4_2_f_a.gray"), "x")
-  assert.deepEqual(Buffer.from(execFileSync(cmd[0], cmd.slice(1)).toString(), "base64"), out)
-  const missing = M.flowInputCommand(dir, ["missing.png"], 4, 2)
-  assert.throws(() => execFileSync(missing[0], missing.slice(1), { stdio: "pipe" }))
-})
-
 test("radar: rotating slots retain decoded endpoints across advancement and wrap", () => {
   const frames = Array.from({ length: 5 }, (_, i) => ({ timeMs: i * 300000 }))
   let prev = M.radarImageSlots(frames, 0, 0)
@@ -729,14 +689,6 @@ test("radar: a replacement loop carries on at the same time", () => {
   assert.equal(M.radarFrameAt(frames, 0), 0)        // dropped off the start
   assert.equal(M.radarFrameAt(frames, 1200000), 0)  // past the end: from the start
   assert.equal(M.radarFrameAt([], 0), 0)
-})
-
-test("radar: source gaps and the loop seam are never interpolated", () => {
-  const frames = [0, 300000, 1500000].map(timeMs => ({ timeMs }))
-  assert.equal(M.radarCanBlend(frames, 0, 1), true)
-  assert.equal(M.radarCanBlend(frames, 1, 2), false)
-  assert.equal(M.radarCanBlend(frames, 2, 0), false)
-  assert.equal(M.radarCanBlend([], 0, 1), false)
 })
 
 test("list keys: unique, stable for unchanged content, new for changed content", () => {

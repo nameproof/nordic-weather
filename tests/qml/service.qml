@@ -9,8 +9,6 @@ Scope {
   property double since: Date.now()
   property real savedPhase: 0
   property int savedFrame: 0
-  property int savedSequence: 0
-  property string firstAtlas: ""
 
   // Exercise the actual service, processes and worker without network
   // requests or changing the user's location/settings.
@@ -25,10 +23,8 @@ Scope {
     id: images
     loop: service.yrImageLoop
     playhead: service.yrShownValid ? service.yrPlayhead : ({ frame: 0, tick: 0 })
-    blend: service.yrBlend
     directory: service.tilesDir
     token: service.yrPresentationToken
-    useFlow: true
     onPrepared: function(token, ready) { service.radarImagesPrepared(token, ready) }
   }
 
@@ -37,7 +33,7 @@ Scope {
   }
   function next() { stage++; since = Date.now() }
   function loop(key, times) {
-    return { key: key, viewKey: service.yrViewKey, width: 256, height: 192, nowIndex: 0, flow: null,
+    return { key: key, viewKey: service.yrViewKey, nowIndex: 0,
              frames: times.map(function(t) { return { timeMs: t, runId: "", forecast: false } }) }
   }
   function viewer(open) { service.updateViewer("test", { open: open, radarOpen: open, width: 256, height: 192 }) }
@@ -55,83 +51,55 @@ Scope {
   function step() {
     if (Date.now() - started > 15000) throw new Error("timeout at stage " + stage)
     if (stage === 0 && service.cacheLoaded) {
-      service.cache = { prefs: { radarSource: "yr", radarSmoothing: "flow", radarFps: 12, mapStep: 1 } }
+      service.cache = { prefs: { radarSource: "yr", mapStep: 1 } }
       viewer(true)
       service.yrPending = loop("first", [0, 300000, 600000])
+      check(service.publishYrLoop(false), "nothing on screen: publish at once")
       next()
-    } else if (stage === 1 && service.yrShown && service.yrShown.flow && service.yrImagesReady && service.yrPhaseMs > 0) {
-      firstAtlas = service.yrShown.flow.file
-      check(service.yrShown.flow.knownCells > 0, "worker must find motion")
+    } else if (stage === 1 && service.yrShownValid && service.yrImagesReady && service.yrPlayhead.tick > 1) {
       service.togglePause()
-      savedPhase = service.yrPhaseMs
       savedFrame = service.yrFrame
       next()
-    } else if (stage === 2 && Date.now() - since > 200) {
-      check(service.yrPhaseMs === savedPhase && service.yrFrame === savedFrame, "pause must freeze interpolation")
+    } else if (stage === 2 && Date.now() - since > 300) {
+      check(service.yrFrame === savedFrame, "pause must hold the frame")
       service.seekFrame(1)
-      check(service.yrPhaseMs === 0 && service.yrPaused, "seek must select a source frame")
+      check(service.yrFrame === 1 && service.yrPaused, "seek must select a frame and stay paused")
       service.yrPending = loop("second", [300000, 600000, 900000])
-      next()
-    } else if (stage === 3 && service.yrPending && service.yrPending.flow) {
-      check(service.yrShown.key === "first", "paused loop must not be replaced")
-      check(service.yrPending.flow.file !== firstAtlas, "pending atlas must not overwrite the active atlas")
+      check(!service.publishYrLoop(false), "a loop on screen is only replaced at a frame boundary")
       service.togglePause()
       next()
-    } else if (stage === 4 && service.yrShown.key === "second" && service.yrImagesReady) {
-      savedSequence = service.yrFlowSequence
+    } else if (stage === 3 && service.yrShown.key === "second" && service.yrImagesReady) {
+      // Replaced at the step from 5 min (frame 1 of the first loop) to
+      // 10 min: the second loop carries on at 10 min or later, not at 5.
+      check(service.yrCurrentFrame.timeMs >= 600000, "a new loop carries on at the same time")
       savedFrame = service.yrFrame
       savedPhase = service.yrPhaseMs
       viewer(false)
       next()
-    } else if (stage === 5 && Date.now() - since > 200) {
+    } else if (stage === 4 && Date.now() - since > 300) {
       check(service.yrFrame === savedFrame && service.yrPhaseMs === savedPhase, "closed radar must not animate")
       viewer(true)
-      next()
-    } else if (stage === 6 && service.yrImagesReady) {
-      check(service.yrFlowSequence === savedSequence, "reopening should reuse the prepared loop")
-      service.yrPending = loop("single", [300000])
-      service.publishYrLoop(true)
-      next()
-    } else if (stage === 7 && Date.now() - since > 100) {
-      check(service.yrFlowSequence === savedSequence && service.yrFlowBusy === "", "one frame must not start flow work")
-      service.yrPending = loop("bad", [9900000, 10200000])
-      next()
-    } else if (stage === 8 && service.yrFlowFailure.attempts === 1 && !service.yrFlowWorking) {
-      next()
-    } else if (stage === 9 && Date.now() - since > 200) {
-      check(service.yrFlowFailure.attempts === 1, "failure must back off")
-      service.yrFlowFailure = { key: "bad", attempts: 1, nextMs: 0 }
-      service.maybeEstimateFlow()
-      next()
-    } else if (stage === 10 && service.yrFlowFailure.attempts === 2 && !service.yrFlowWorking) {
-      service.yrFlowFailure = { key: "bad", attempts: 2, nextMs: 0 }
-      service.maybeEstimateFlow()
-      next()
-    } else if (stage === 11 && service.yrFlowFailure.attempts === 3 && !service.yrFlowWorking) {
-      next()
-    } else if (stage === 12 && Date.now() - since > 200) {
-      check(service.yrFlowFailure.attempts === 3 && service.yrFlowBusy === "", "retries must stop after three failures")
       index([1200000, 1500000])
       next()
-    } else if (stage === 13 && service.yrPreviewValid && images.ready) {
+    } else if (stage === 5 && service.yrPreviewValid && images.ready) {
       check(!service.yrPlaying && service.yrCurrentFrame.timeMs === 1500000, "show the assembled observation until frames can play")
       // The first batch arrives: it is assembled and shown at once.
       service.yrRadarDoneKey = service.yrRadarKey
       service.yrRadarDoneCount = 1
       service.maybeComposeYrFrames()
       next()
-    } else if (stage === 14 && service.yrShownValid && service.yrShown.partial && service.yrImagesReady) {
-      check(service.yrPlayLimit === 1 && !service.yrShown.flow, "a partial loop plays what is assembled, without flow")
+    } else if (stage === 6 && service.yrShownValid && service.yrShown.partial && service.yrImagesReady) {
+      check(service.yrPlayLimit === 1, "a partial loop plays what is assembled")
       service.yrRadarDoneCount = 2
       service.maybeComposeYrFrames()
       next()
-    } else if (stage === 15 && service.yrShownValid && !service.yrShown.partial && service.yrShown.flow && service.yrImagesReady) {
-      check(service.yrShown.frames.length === 2 && service.yrPlayLimit === 2, "the complete loop, with flow, replaces the partial one")
+    } else if (stage === 7 && service.yrShownValid && !service.yrShown.partial && service.yrImagesReady) {
+      check(service.yrShown.frames.length === 2 && service.yrPlayLimit === 2, "the complete loop replaces the partial one")
       index([1800000])
       next()
-    } else if (stage === 16 && service.yrRetryCount === 1) {
+    } else if (stage === 8 && service.yrRetryCount === 1) {
       next()
-    } else if (stage === 17 && Date.now() - since > 200) {
+    } else if (stage === 9 && Date.now() - since > 200) {
       check(service.yrRetryCount === 1 && service.yrRadarNowDoneKey === "", "failed preview must back off and recheck its tiles")
       console.log("RADAR_SERVICE_PASS")
       Qt.quit()
