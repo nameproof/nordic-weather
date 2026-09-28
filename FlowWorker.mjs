@@ -7,7 +7,7 @@ WorkerScript.onMessage = function(message) {
   let result = null
   let error = ""
   try {
-    result = loopFlow(message.data, message.w, message.h, message.count, message.mapWidth, message.mapHeight)
+    result = loopFlow(message.data, message.w, message.h, message.count, message.mapWidth, message.mapHeight, message.options)
   } catch (e) {
     error = String(e)
   }

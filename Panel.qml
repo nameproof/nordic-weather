@@ -150,11 +150,6 @@ Panel {
   readonly property int mapStep: service ? service.mapStep : Model.MAP_DEFAULT_STEP
   readonly property var mapViewState: yrRadarActive ? service.mapViewState : null
   readonly property var yrBaseTiles: yrRadarActive ? service.yrBaseTiles : []
-  readonly property var yrRadarTiles: yrRadarActive ? service.yrRadarTiles : []
-  readonly property int yrRadarRevision: service ? service.yrRadarRevision : 0
-  readonly property int yrFramesRevision: service ? service.yrFramesRevision : 0
-  readonly property string yrViewKey: service ? service.yrViewKey : ""
-  readonly property bool yrShownValid: yrRadarActive && service.yrShownValid
   readonly property var yrDisplay: service ? service.yrDisplay : ({ frames: [], nowIndex: -1 })
   readonly property var yrCurrentFrame: service ? service.yrCurrentFrame : null
   readonly property int yrFrame: service ? service.yrFrame : 0
@@ -164,18 +159,12 @@ Panel {
 
   // Smoothing test (see Service.qml): off, fade or flow.
   readonly property string radarSmoothing: service ? service.radarSmoothing : "off"
-  readonly property int radarFps: service ? service.radarFps : 8
+  readonly property int radarFps: service ? service.radarFps : 12
   readonly property bool yrSmooth: radarSmoothing !== "off"
   readonly property real yrBlend: service ? service.yrBlend : 0
-  readonly property int yrCurrentIndex: service ? service.yrCurrentIndex : -1
-  readonly property var yrSlots: service ? service.yrSlots : ({ frames: [null, null], current: 0 })
-  readonly property bool yrFlowReady: service ? service.yrFlowReady : false
-  readonly property var yrFlowInfo: service ? service.yrFlowInfo : null
-  readonly property int yrFlowRevision: service ? service.yrFlowRevision : 0
-
-  function yrFrameUrl(frame) {
-    return frame ? "file://" + tilesDir + "/" + Model.radarFrameFile(frame, yrViewKey) + "?v=" + yrFramesRevision : ""
-  }
+  readonly property var yrImageLoop: service ? service.yrImageLoop : null
+  readonly property var yrPlayhead: service && service.yrShownValid ? service.yrPlayhead : ({ frame: 0, tick: 0 })
+  readonly property string yrPresentationToken: service ? service.yrPresentationToken : ""
 
   function refresh(force) { if (service) service.refresh(force) }
   function zoomMap(delta) { if (service) service.zoomMap(delta) }
@@ -1297,89 +1286,42 @@ Panel {
             }
           }
 
-          // Radar, assembled frames: the frame image feeds the radar shader
-          // directly (a ShaderEffect can sample an Image; no offscreen pass
-          // per frame), and decodes in a background thread while the previous
-          // frame stays on screen (retainWhileLoading, Qt ≥ 6.8).
+          // One shader samples the rotating image providers directly. The
+          // complete old loop stays on screen while a replacement decodes.
+          RadarImages {
+            id: radarImages
+            loop: root.yrImageLoop
+            playhead: root.yrPlayhead
+            blend: root.yrBlend
+            directory: root.tilesDir
+            token: root.yrPresentationToken
+            useFlow: root.radarSmoothing === "flow"
+            onPrepared: function(token, ready) {
+              if (root.service) root.service.radarImagesPrepared(token, ready)
+            }
+          }
+          // Stands in for a missing image (e.g. right after a zoom): a
+          // ShaderEffect warns about any texture property that is null.
           Image {
-            id: radarFrameImage
-            anchors.fill: parent
+            id: noRadarImage
             visible: false
-            smooth: false
-            cache: false
-            asynchronous: true
-            retainWhileLoading: true
-            source: !root.yrSmooth && root.yrShownValid ? root.yrFrameUrl(root.yrCurrentFrame) : ""
           }
           ShaderEffect {
             anchors.fill: parent
-            // Loading also counts: retainWhileLoading keeps the previous frame up.
-            visible: !root.yrSmooth && root.yrShownValid && radarFrameImage.status !== Image.Null && radarFrameImage.status !== Image.Error
-            property var source: radarFrameImage
-            property real strength: root.radarStrength
-            property real dimStrength: root.radarDimStrength
-            property real lineStrength: root.radarLineStrength
-            property real lineSpacing: root.radarLineSpacing
-            property real lineWidth: root.radarLineWidth
-            property color lineColor: root.radarLineColor
-            fragmentShader: Qt.resolvedUrl("shaders/radar.frag.qsb")
-          }
-
-          // Smoothing test: the current and the upcoming frame in two images
-          // that swap roles at every frame (Service.yrSlots), so each frame is
-          // decoded once, while it waits as the upcoming one. Filtered, because flow
-          // samples between pixels.
-          Image {
-            id: smoothImage0
-            anchors.fill: parent
-            visible: false
-            smooth: true
-            cache: false
-            asynchronous: true
-            retainWhileLoading: true
-            source: root.yrSmooth && root.yrShownValid
-              ? root.yrFrameUrl(root.yrSlots.frames[0]) : ""
-          }
-          Image {
-            id: smoothImage1
-            anchors.fill: parent
-            visible: false
-            smooth: true
-            cache: false
-            asynchronous: true
-            retainWhileLoading: true
-            source: root.yrSmooth && root.yrShownValid
-              ? root.yrFrameUrl(root.yrSlots.frames[1]) : ""
-          }
-          // The loop's motion field atlas (Flow.mjs), filtered so motion
-          // varies smoothly between cells.
-          Image {
-            id: flowImage
-            visible: false
-            smooth: true
-            cache: false
-            asynchronous: true
-            source: root.radarSmoothing === "flow" && root.yrFlowReady
-              ? "file://" + root.tilesDir + "/flow.ppm?v=" + root.yrFlowRevision : ""
-          }
-          ShaderEffect {
-            anchors.fill: parent
-            readonly property var current: root.yrSlots.current === 0 ? smoothImage0 : smoothImage1
-            readonly property var upcoming: root.yrSlots.current === 0 ? smoothImage1 : smoothImage0
-            readonly property bool upcomingReady: upcoming.status === Image.Ready
-            readonly property bool flowUsable: root.radarSmoothing === "flow" && root.yrFlowReady
-              && flowImage.status === Image.Ready && root.yrFlowInfo !== null
-            visible: root.yrSmooth && root.yrShownValid && current.status !== Image.Null && current.status !== Image.Error
-            property var sourceA: current
-            property var sourceB: upcomingReady ? upcoming : current
-            property var flowField: flowUsable ? flowImage : current
-            property real blend: upcomingReady ? root.yrBlend : 0
-            property real flowOn: flowUsable ? 1 : 0
-            property real flowPair: Math.max(0, root.yrCurrentIndex)
-            property real flowPairs: root.yrFlowInfo ? root.yrFlowInfo.pairs : 1
-            property real flowUnit: root.yrFlowInfo ? root.yrFlowInfo.unit : 1
-            property vector2d flowGrid: root.yrFlowInfo ? Qt.vector2d(root.yrFlowInfo.gx, root.yrFlowInfo.gy) : Qt.vector2d(1, 1)
-            property vector2d flowCell: root.yrFlowInfo ? Qt.vector2d(root.yrFlowInfo.cellW, root.yrFlowInfo.cellH) : Qt.vector2d(1, 1)
+            visible: radarImages.current !== null
+            property var sourceA: radarImages.current || noRadarImage
+            property var sourceB: radarImages.upcoming || noRadarImage
+            property var flowField: radarImages.flowReady ? radarImages.flow : noRadarImage
+            property var coverageMap: radarImages.coverage || noRadarImage
+            // Flow without its motion field yet draws real frames only, as Off.
+            property real blend: root.yrSmooth && (root.radarSmoothing !== "flow" || radarImages.flowReady)
+              ? radarImages.displayBlend : 0
+            property real flowOn: radarImages.flowReady ? 1 : 0
+            property real flowPair: radarImages.displayIndex
+            property real flowPairs: radarImages.flowInfo ? radarImages.flowInfo.pairs : 1
+            property real flowUnit: radarImages.flowInfo ? radarImages.flowInfo.unit : 1
+            property vector2d flowGrid: radarImages.flowInfo ? Qt.vector2d(radarImages.flowInfo.gx, radarImages.flowInfo.gy) : Qt.vector2d(1, 1)
+            property vector2d flowCell: radarImages.flowInfo ? Qt.vector2d(radarImages.flowInfo.cellW, radarImages.flowInfo.cellH) : Qt.vector2d(1, 1)
             property vector2d mapSize: Qt.vector2d(width, height)
             property real strength: root.radarStrength
             property real dimStrength: root.radarDimStrength
@@ -1388,46 +1330,6 @@ Panel {
             property real lineWidth: root.radarLineWidth
             property color lineColor: root.radarLineColor
             fragmentShader: Qt.resolvedUrl("shaders/radar-smooth.frag.qsb")
-          }
-
-          // Until then (first open, new zoom): the frame's tiles, combined in
-          // a layer. Loaded synchronously so a frame never shows a mix of two.
-          Item {
-            anchors.fill: parent
-            visible: !root.yrShownValid
-            layer.enabled: visible
-            layer.smooth: true
-            layer.effect: ShaderEffect {
-              property real strength: root.radarStrength
-              property real dimStrength: root.radarDimStrength
-              property real lineStrength: root.radarLineStrength
-              property real lineSpacing: root.radarLineSpacing
-              property real lineWidth: root.radarLineWidth
-              property color lineColor: root.radarLineColor
-              fragmentShader: Qt.resolvedUrl("shaders/radar.frag.qsb")
-            }
-
-            Repeater {
-              model: ScriptModel { values: root.yrShownValid ? [] : root.yrRadarTiles; objectProp: "key" }
-
-              Image {
-                required property var modelData
-                x: modelData.left
-                y: modelData.top
-                width: modelData.size
-                height: modelData.size
-                smooth: true
-                // No pixmap cache: a full animation is ~1000 tiles (≈270 MB
-                // decoded). No mipmaps: they would only be regenerated per
-                // frame, and mixed settings on shared cached textures make Qt
-                // warn and keep the old filtering (QSGPlainTexture).
-                cache: false
-                asynchronous: false
-                source: root.yrCurrentFrame && root.yrRadarRevision > 0
-                  ? "file://" + root.tilesDir + "/" + Model.radarTileFile(modelData, root.yrCurrentFrame) + "?v=" + root.yrRadarRevision
-                  : ""
-              }
-            }
           }
 
           // Nearby cities and towns (map/places.json), picked per zoom level.

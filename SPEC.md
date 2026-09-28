@@ -41,6 +41,9 @@ BarWidget.qml    bar pill (one per monitor); loads its Panel only while open
 Panel.qml        popout UI (one per monitor while open); reports what it shows
                  back to the service (open, radar open, map size)
 Model.js         pure functions (.pragma library: one shared copy)
+Flow.mjs         motion estimation for Flow (runs in a WorkerScript)
+FlowWorker.mjs   short-lived WorkerScript for preparing a loop off the GUI thread
+RadarImages.qml  rotating image providers and staging for loop replacements
 shaders/         radar and base-map shaders (+ compiled .qsb)
 map/             base-map tiles and place names (scripts/build-basemap.py)
 tests/           node tests for Model.js + saved API fixtures
@@ -367,7 +370,11 @@ cache file's `prefs`):
 
   On steps 1–3 the view centres on the location but is shifted to stay in
   the coverage box, so the marker can sit off-centre. Parts of the box
-  without radar (open sea) are dimmed by the radar shader.
+  without radar (open sea) are dimmed and hatched by the radar shader, from
+  one image for the whole loop: its latest observation. yr.no's frames
+  disagree on coverage (a radar missing from one observation, forecast
+  frames filling the gaps as they run ahead), so taken per frame the
+  hatching would change shape through the loop.
 
   The base map is rendered by `scripts/build-basemap.py` from OpenStreetMap
   extracts (`scripts/basemap-regions.txt`) for the coverage box and the
@@ -378,7 +385,71 @@ cache file's `prefs`):
 
 ## Testing
 
-- **Unit tests:** `node --test tests/` against saved API responses (fixtures):
+### Radar smoothing
+
+The experimental controls retain Off, Fade and Flow, with 8/12/16 FPS caps.
+The default cap is 12 FPS; saved preferences take precedence. All modes keep
+the same timeline speed: 250 ms per five-minute radar observation. A shared
+timer advances by elapsed time, retaining scheduling remainders. It freezes
+while images load, while paused, or when the panel is closed. Long stalls
+and clock jumps reanchor it. The loop seam and timestamp gaps are cuts.
+
+On a first open or new zoom, the latest observation is assembled as a still
+preview; then frames are assembled batch by batch as their tiles arrive and
+play at once, waiting on the newest assembled frame (about 2 s to the first
+frames, where all 41 take about 9 s). Once a complete loop plays, a
+replacement is prepared whole, with its own motion atlas, and published at a
+frame boundary, carrying on at the same time. Paused playback holds its
+existing loop.
+`RadarImages.qml` keeps three rotating image slots, plus a temporary staging
+set during replacement. The previous set stays on screen until the new
+endpoints and matching atlas are ready. Images disable Qt's decoded-image
+cache and are sampled directly by one shader, without offscreen layers.
+
+Flow preparation:
+
+- ImageMagick resizes each frame before opening the next, extracts HCL
+  chroma at quarter resolution, and stores a lossless raw analysis sidecar.
+  Reused sidecars are size-checked. Analysis uses at most two ImageMagick
+  threads; composition uses four processes with one thread each.
+- A three-level pyramid finds motion up to ±12 analysis pixels (about
+  ±48 map pixels). Neighbouring cells share the coarse prediction, then
+  refine separately. Low texture, poor/ambiguous matches, search-boundary
+  hits, and isolated outliers lose confidence. Wider context checks reject
+  small-block aliases. Unknown cells may borrow trusted neighbouring motion.
+- Temporal smoothing stops at gaps and observation/forecast boundaries.
+  Every loop is estimated whole: yr.no issues all frames under new run IDs
+  at each update, so consecutive loops share no frame pair. Worker pixels
+  and pyramids are released after each job.
+- The atlas packs displacement into red/green and confidence into blue.
+  Flow never averages two frames: each drawing shows one real frame moved
+  along the motion, the current one pushed forward for the first half of
+  the interval and the next one pulled back for the second. Averaging would
+  wash the rain's texture out between frames, a visible 4 Hz pulse (Fade
+  does this by design). Motion is scaled by confidence, so untrusted rain
+  switches frame halfway without moving; motion that would read past the
+  map crop is dropped. Every Flow drawing, real frames included, goes
+  through the same small filter (four taps ±0.35 px): plain filtering would
+  soften a frame moved by half a pixel more than one on whole pixels (a
+  16% contrast pulse), and unfiltered rain moves in uneven whole-pixel
+  strides (a stagger). Until its motion field is ready, Flow draws real
+  frames only.
+- Atlases have unique filenames and atomic writes. Preparation failures
+  back off for 1 then 5 seconds, stopping after three attempts per loop.
+  An existing working loop stays visible during retries; initial failure
+  or exhausted retries allow the prepared image loop to use Fade. Analysis
+  sidecars and old atlases are pruned after two hours on later preparation.
+
+Preparation per new loop (40 pairs, 627×724 map, Ryzen 7 7800X3D, Qt
+6.11.2): ImageMagick input about 0.3–0.4 s with a peak of about 20 MiB,
+worker about 0.35–0.8 s depending on how much of the map has rain; a
+synthetic fully rainy loop takes about 1.6 s in the worker.
+
+### Checks
+
+- **Tests:** `npm test` against saved API responses and synthetic motion
+  fixtures; Qt tests also exercise image buffering, actual WorkerScript
+  messages, composition/preview loading, pause/resume and bounded retries:
   - an ordinary complete forecast (the Alingsås response from 2026-09-26)
   - a forecast with precipitation and thunder
   - the switch from hourly to 6-hour steps
@@ -388,6 +459,8 @@ cache file's `prefs`):
   - the misspelled symbol codes
   - moon phase bucket edges
   - an empty search result
+- **Shader pixels:** `RADAR_RENDER_TESTS=1 npm test` adds an offscreen OpenGL
+  RHI check for Off/Fade/Flow, confidence blending and crop-edge fallback.
 - **Lint:** `qmllint -I "$OMARCHY_PATH/shell" *.qml`
 - **Manifest:** `omarchy plugin validate .`
 - **Manual:**

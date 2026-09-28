@@ -15,7 +15,7 @@ DEST="$HOME/.config/omarchy/plugins/$ID"
 mkdir -p "$DEST"
 # nullglob: a first deploy has no files yet, and cat must not fail on it
 # (manifest.jso[n] is a glob so it drops out too).
-code_sum() { (shopt -s nullglob; cat "$DEST"/*.qml "$DEST"/*.js "$DEST"/manifest.jso[n] "$DEST"/shaders/*.qsb) | sha256sum; }
+code_sum() { (shopt -s nullglob; cat "$DEST"/*.qml "$DEST"/*.js "$DEST"/*.mjs "$DEST"/manifest.jso[n] "$DEST"/shaders/*.qsb) | sha256sum; }
 before=$(code_sum)
 rsync -a --delete --exclude .git --exclude node_modules --exclude build "$SRC/" "$DEST/"
 # Validate what was installed (build/ holds a venv with symlinks, but it is

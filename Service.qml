@@ -417,9 +417,10 @@ Scope {
   onMetRadarActiveChanged: if (metRadarActive) maybeFetch(false)
   onYrRadarActiveChanged: if (yrRadarActive) {
     yrPlayhead = { frame: 0, tick: yrPlayhead.tick }
-    yrSub = 0
+    yrPhaseMs = 0
     yrPaused = false
     maybeFetch(false)
+    Qt.callLater(maybeComposeYrFrames)
     Qt.callLater(maybeEstimateFlow)
   }
 
@@ -479,8 +480,6 @@ Scope {
   readonly property var yrBaseTiles: mapViewState ? Model.viewTiles(mapViewState, yrMapWidth, yrMapHeight) : []
   readonly property var yrRadarTiles: mapViewState
     ? Model.viewTiles(Model.radarView(mapViewState), yrMapWidth, yrMapHeight) : []
-  // Bumped after each download batch so Images re-read files that just arrived.
-  property int yrRadarRevision: 0
   // Frames download in playback order, yrBatchFrames at a time; this many
   // frames (a prefix) of the key yrRadarDoneKey are on disk.
   property string yrRadarDoneKey: ""
@@ -499,7 +498,7 @@ Scope {
 
   function togglePause() {
     yrPaused = !yrPaused
-    yrSub = 0
+    yrClockMs = Date.now()
   }
 
   // Scrubbing (the ruler on the map, or , and .): show a frame and pause.
@@ -508,7 +507,7 @@ Scope {
     var n = Math.min(yrDisplay.frames.length, yrPlayLimit)
     if (n <= 0) return
     yrPlayhead = { frame: Math.max(0, Math.min(n - 1, index)), tick: yrPlayhead.tick }
-    yrSub = 0
+    yrPhaseMs = 0
     yrPaused = true
   }
 
@@ -521,7 +520,7 @@ Scope {
   // (fade) or moved (flow) further towards the next frame.
   readonly property string radarSmoothing: cache.prefs && (cache.prefs.radarSmoothing === "fade" || cache.prefs.radarSmoothing === "flow")
     ? cache.prefs.radarSmoothing : "off"
-  readonly property int radarFps: cache.prefs && [8, 12, 16].indexOf(cache.prefs.radarFps) >= 0 ? cache.prefs.radarFps : 8
+  readonly property int radarFps: cache.prefs && [8, 12, 16].indexOf(cache.prefs.radarFps) >= 0 ? cache.prefs.radarFps : 12
   readonly property int yrSubsteps: radarSmoothing === "off" ? 1 : radarFps / 4
 
   function setRadarSmoothing(mode) {
@@ -532,37 +531,32 @@ Scope {
     if ([8, 12, 16].indexOf(fps) >= 0) setPref("radarFps", fps)
   }
 
-  // Drawings done within the current frame (0 … yrSubsteps − 1).
-  property int yrSub: 0
+  property real yrPhaseMs: 0
+  property double yrClockMs: 0
   readonly property int yrCurrentIndex: yrDisplay.frames.length ? Math.min(yrFrame, yrDisplay.frames.length - 1) : -1
   readonly property int yrUpcomingIndex: yrDisplay.frames.length
     ? Model.radarNextFrame(yrFrame, yrDisplay.frames.length, Math.min(yrDisplay.frames.length, yrPlayLimit)) : -1
-  // The two images panels draw from when smoothing: the frame on screen in
-  // slot tick % 2, the upcoming one in the other. At each step the upcoming
-  // frame, already decoded, becomes the current one where it is, and only
-  // the other slot loads. Read straight from yrPlayhead, so it changes once
-  // per step.
-  readonly property var yrSlots: {
-    var frames = yrShownValid ? yrShown.frames : []
-    var n = frames.length
-    if (!n) return { frames: [null, null], current: 0 }
-    var cur = Math.min(yrPlayhead.frame, n - 1)
-    var up = Model.radarNextFrame(yrPlayhead.frame, n, n)
-    var k = yrPlayhead.tick % 2
-    var slots = [null, null]
-    slots[k] = frames[cur]
-    slots[1 - k] = up !== cur ? frames[up] : null
-    return { frames: slots, current: k }
+  // A source timestamp gap and the loop seam are cuts, not interpolated
+  // weather. Pausing freezes the displayed interpolation; seeking shows
+  // the exact source frame.
+  readonly property bool yrBlendable: yrShownValid && Model.radarCanBlend(yrShown.frames, yrCurrentIndex, yrUpcomingIndex)
+  readonly property real yrBlend: radarSmoothing !== "off" && yrBlendable ? yrPhaseMs / 250 : 0
+  readonly property string yrPresentationToken: (yrShownValid ? yrShown.key + "|" + (yrShown.flow ? yrShown.flow.file : "") : "")
+    + "|" + yrPlayhead.frame + "|" + yrPlayhead.tick + "|" + radarSmoothing
+  property string yrReadyToken: ""
+  property bool yrReadyImages: false
+  readonly property bool yrImagesReady: yrReadyToken === yrPresentationToken && yrReadyImages
+
+  function radarImagesPrepared(token, ready) {
+    if (token !== yrPresentationToken) return
+    yrReadyToken = token
+    yrReadyImages = ready
   }
-  // Only towards the next frame in time, never across the loop's seam.
-  readonly property bool yrBlendable: yrShownValid && !yrPaused && yrUpcomingIndex === yrCurrentIndex + 1
-  readonly property real yrBlend: yrBlendable ? yrSub / yrSubsteps : 0
 
   // Identifies the full tile set: the map view (which tiles) and every
-  // frame (which run and time). The latest observed frame downloads first
-  // (≈25 tiles) and is shown until the first batch of frames is in; playback
-  // then starts and never runs ahead of the download (it holds on the last
-  // frame that is there).
+  // frame (which run and time). The latest observation downloads first
+  // (≈25 tiles) and is assembled as a still preview until the first batch
+  // of frames can play.
   readonly property string yrRadarKey: yrRadar.frames.length && yrViewKey !== "" && yrRadarTiles.length
     ? yrViewKey + "|" + Model.radarFramesKey(yrRadar.frames) : ""
   onYrRadarKeyChanged: {
@@ -579,43 +573,90 @@ Scope {
     onTriggered: root.maybeDownloadYrTiles()
   }
   readonly property int yrRadarReadyCount: yrRadarKey !== "" && yrRadarDoneKey === yrRadarKey ? yrRadarDoneCount : 0
-  readonly property bool yrRadarReady: yrRadarKey !== "" && yrRadarReadyCount >= yrRadar.frames.length
-  readonly property bool yrPlayable: yrRadarKey !== "" && yrRadarReadyCount >= Math.min(yrBatchFrames, yrRadar.frames.length)
   property string yrRadarNowDoneKey: ""
   readonly property var yrNowFrame: yrRadar.frames.length ? yrRadar.frames[Math.max(0, yrRadar.nowIndex)] : null
 
-  // What plays: the last fully assembled loop for this view ({ frames,
-  // nowIndex, viewKey }), kept while a newer forecast run downloads so the
-  // animation doesn't stop every 5 minutes. Without one (first open, new
-  // zoom), the live tiles play once downloaded, holding "now" until then.
+  // Published loops are immutable. A complete loop replacing a working one
+  // is staged with its flow and published at a frame boundary. On a first
+  // open or new zoom nothing works yet, so frames are assembled batch by
+  // batch as their tiles arrive and play as they come: a partial loop, of
+  // which the first `ready` frames are assembled; playback waits on the
+  // newest until the next batch extends it.
   property var yrShown: null
+  property var yrPending: null
+  property var yrPreview: null
   readonly property bool yrShownValid: yrShown !== null && yrShown.viewKey === yrViewKey
-  readonly property var yrDisplay: yrShownValid ? yrShown : yrRadar
-  readonly property bool yrPlaying: yrShownValid || yrPlayable
-  // How far playback may go: everything for an assembled loop, otherwise
-  // the frames downloaded so far.
-  readonly property int yrPlayLimit: yrShownValid ? yrShown.frames.length : yrRadarReadyCount
-  readonly property var yrCurrentFrame: !yrDisplay.frames.length ? null
-    : yrPlaying ? yrDisplay.frames[Math.min(yrFrame, yrDisplay.frames.length - 1, Math.max(0, yrPlayLimit - 1))] : yrNowFrame
+  readonly property bool yrPreviewValid: yrPreview !== null && yrPreview.viewKey === yrViewKey
+  readonly property var yrDisplay: yrShownValid ? yrShown : yrPreviewValid ? yrPreview : yrRadar
+  readonly property var yrImageLoop: yrShownValid ? yrShown : yrPreviewValid ? yrPreview : null
+  readonly property int yrPlayLimit: yrShownValid ? loopReady(yrShown) : 0
+  readonly property bool yrPlaying: yrShownValid && yrPlayLimit > 1
+  readonly property var yrCurrentFrame: yrShownValid ? yrShown.frames[Math.min(yrFrame, yrPlayLimit - 1)]
+    : yrPreviewValid ? yrPreview.frames[0] : null
 
-  // Pre-assembled frames (Model.frameComposeCommand): once a view's tiles
-  // are all downloaded, each frame becomes one map-sized image, so playback
-  // decodes one image per frame instead of 20–25 tiles. Until then (and for
-  // any new view) the tiles are shown directly.
+  function loopReady(loop) {
+    return loop.ready === undefined ? loop.frames.length : loop.ready
+  }
+
+  function loopBase(loop) {
+    return loop.base || loop.key
+  }
+
+  function publishYrLoop(boundary, nextFrame) {
+    var loop = yrPending
+    if (!loop || loop.viewKey !== yrViewKey) return false
+    if (!loop.partial && radarSmoothing === "flow" && loop.frames.length > 1 && !loop.flow && !loop.flowFailed) return false
+    // A complete loop on screen changes only at a frame boundary; a partial
+    // one at once, since it may be waiting on its newest frame.
+    if (yrShownValid && !yrShown.partial && yrShown.frames.length > 1 && !boundary) return false
+    // The same frames, more of them assembled (or with flow): carry on. New
+    // data: carry on at the same time, not back at the start.
+    var frame = 0
+    if (yrShownValid) {
+      var at = Math.min(nextFrame === undefined ? yrFrame : nextFrame, yrShown.frames.length - 1)
+      frame = loopBase(yrShown) === loopBase(loop) ? at : Model.radarFrameAt(loop.frames, yrShown.frames[at].timeMs)
+      frame = Math.min(frame, loopReady(loop) - 1)
+    }
+    yrPhaseMs = 0
+    yrShown = loop
+    yrPending = null
+    yrPlayhead = { frame: frame, tick: yrPlayhead.tick + 1 }
+    yrClockMs = Date.now()
+    return true
+  }
+
+  // Pre-assembled frames (Model.frameComposeCommand): each frame becomes
+  // one map-sized image, so playback decodes one image per frame instead of
+  // 20–25 tiles. Assembled in download order, as batches arrive, while
+  // nothing complete of this view is on screen; otherwise once all of a
+  // loop's tiles are there.
   readonly property string yrViewKey: Model.mapViewKey(mapViewState, yrMapWidth, yrMapHeight)
   readonly property string yrFramesKey: yrRadarKey
-  property string yrFramesDoneKey: ""
-  property int yrFramesRevision: 0
+  // How many frames (a prefix) of the loop yrComposedKey are assembled.
+  property string yrComposedKey: ""
+  property int yrComposedCount: 0
   onYrFramesKeyChanged: Qt.callLater(maybeComposeYrFrames)
 
   function maybeComposeYrFrames() {
-    if (!yrRadarActive || !yrRadarReady || yrViewKey === "" || yrFramesProc.running
-        || yrFramesDoneKey === yrFramesKey) return
+    if (!yrRadarActive || yrViewKey === "" || yrFramesProc.running) return
+    var n = yrRadar.frames.length
+    var composed = yrComposedKey === yrFramesKey ? yrComposedCount : 0
+    var progressive = !(yrShownValid && !yrShown.partial)
+    var upTo = yrRadarReadyCount >= n ? n : progressive ? yrRadarReadyCount : 0
+    var preview = progressive && upTo === 0 && !yrShownValid && !yrPreviewValid
+      && yrRadarNowDoneKey === yrRadarKey && yrNowFrame !== null
+    if (!preview && (upTo === 0 || upTo <= composed)) return
+    var frames = preview ? [yrNowFrame] : yrRadar.frames
+    var ready = preview ? 1 : upTo
+    var key = yrFramesKey + (preview ? "|preview" : ready < n ? "|" + ready : "")
     var rv = Model.radarView(mapViewState)
-    yrFramesProc.key = yrFramesKey
-    yrFramesProc.loop = { frames: yrRadar.frames, nowIndex: yrRadar.nowIndex, viewKey: yrViewKey, key: yrFramesKey }
+    yrFramesProc.key = key
+    yrFramesProc.preview = preview
+    yrFramesProc.loop = { frames: frames, ready: ready, partial: !preview && ready < n, base: yrFramesKey,
+                         nowIndex: preview ? 0 : yrRadar.nowIndex, viewKey: yrViewKey, key: key,
+                         width: yrMapWidth, height: yrMapHeight, flow: null }
     yrFramesProc.command = Model.frameComposeCommand(tilesDir, yrMapWidth, yrMapHeight, rv.px,
-      Model.frameComposeSpecs(yrRadarTiles, yrRadar.frames, yrViewKey))
+      Model.frameComposeSpecs(yrRadarTiles, frames.slice(0, ready), yrViewKey))
     yrFramesProc.running = true
   }
 
@@ -785,15 +826,16 @@ Scope {
     property int upTo: 0
     onFinished: (key, ok, fetched, missing) => {
       console.log("nordic-weather: yr radar tiles, " + fetched + " fetched" + (missing ? ", " + missing + " missing" : ""))
-      root.yrRadarRevision++
       if (!ok || missing > 0) {
         root.yrRetryCount++
         yrRetry.restart()
       } else if (key.endsWith("|now")) {
         root.yrRetryCount = 0
         root.yrRadarNowDoneKey = key.slice(0, -4)
+        Qt.callLater(root.maybeComposeYrFrames)
       } else {
         root.yrRetryCount = 0
+        Qt.callLater(root.maybeComposeYrFrames)
         root.yrRadarDoneCount = key === root.yrRadarDoneKey ? Math.max(root.yrRadarDoneCount, upTo) : upTo
         root.yrRadarDoneKey = key
       }
@@ -804,16 +846,27 @@ Scope {
   TileProcess {
     id: yrFramesProc
     property var loop: null
+    property bool preview: false
     onFinished: (key, ok, total, made) => {
       console.log("nordic-weather: yr radar frames assembled, " + made + "/" + total)
-      root.yrFramesRevision++
       if (ok && made === total) {
-        root.yrFramesDoneKey = key
-        root.yrShown = loop
-      } else if (key === root.yrRadarKey) {
+        if (preview) {
+          if (loop.viewKey === root.yrViewKey) root.yrPreview = loop
+        } else {
+          root.yrComposedKey = loop.base
+          root.yrComposedCount = loop.ready
+          // A partial loop only stands in while nothing complete plays.
+          if (loop.viewKey === root.yrViewKey && (!loop.partial || !(root.yrShownValid && !root.yrShown.partial))) {
+            root.yrPending = loop
+            root.publishYrLoop(false)
+            if (!loop.partial) Qt.callLater(root.maybeEstimateFlow)
+          }
+        }
+      } else if (loop.base === root.yrRadarKey) {
         // A tile went missing after its batch was counted: check the
         // downloads again (only missing tiles are fetched) after a delay.
         root.yrRadarDoneKey = ""
+        if (preview) root.yrRadarNowDoneKey = ""
         root.yrRetryCount++
         yrRetry.restart()
       }
@@ -822,90 +875,131 @@ Scope {
     onIdle: root.maybeComposeYrFrames()
   }
 
-  // Flow (smoothing test): the motion between consecutive frames of the
-  // loop on screen, estimated once per assembled loop off the GUI thread
-  // (FlowWorker.mjs) from quarter-size rain-strength images (ImageMagick),
-  // and written as a small PPM atlas for the radar shader. What holds the
-  // frames' data (the process and its output, the worker and its engine)
-  // exists only while a loop is estimated: V4 keeps a heap once grown, so
-  // a long-lived worker would hold on to ≈45 MB.
-  readonly property string yrShownKey: yrShown ? yrShown.key : ""
-  property string yrFlowKey: ""
-  property var yrFlowInfo: null
-  property int yrFlowRevision: 0
-  // The loop being estimated ("" when idle) and its input; yrFlowWorking
-  // keeps the process and worker alive.
+  // Flow preparation is independent of playback. Only small raw motion
+  // fields remain between jobs; the worker, decoded pixels and pyramids
+  // are discarded. Files have unique names so a pending atlas never
+  // overwrites the one the renderer is still sampling.
+  readonly property var yrFlowTarget: yrPending && yrPending.viewKey === yrViewKey && !yrPending.partial ? yrPending
+    : yrShownValid && !yrShown.partial ? yrShown : null
   property string yrFlowBusy: ""
   property var yrFlowJob: null
   property bool yrFlowWorking: false
   property double yrFlowStartMs: 0
   property double yrFlowInputMs: 0
-  readonly property bool yrFlowReady: yrShownValid && yrFlowInfo !== null && yrFlowKey === yrShownKey
-  onYrShownKeyChanged: Qt.callLater(maybeEstimateFlow)
-  onRadarSmoothingChanged: Qt.callLater(maybeEstimateFlow)
+  property int yrFlowSequence: 0
+  readonly property string yrFlowSession: String(Date.now())
+  property var yrFlowFailure: ({ key: "", attempts: 0, nextMs: 0 })
+  onYrFlowTargetChanged: Qt.callLater(maybeEstimateFlow)
+  onRadarSmoothingChanged: {
+    yrPhaseMs = 0
+    yrClockMs = Date.now()
+    yrFlowFailure = { key: "", attempts: 0, nextMs: 0 }
+    flowRetry.stop()
+    publishYrLoop(false)
+    Qt.callLater(maybeEstimateFlow)
+  }
+
+  Timer {
+    id: flowRetry
+    onTriggered: root.maybeEstimateFlow()
+  }
 
   function maybeEstimateFlow() {
-    if (radarSmoothing !== "flow" || !yrRadarActive || !yrShownValid || yrFlowBusy !== ""
-        || yrFlowKey === yrShownKey || tilesDir === "") return
-    var files = []
-    for (var i = 0; i < yrShown.frames.length; i++) files.push(Model.radarFrameFile(yrShown.frames[i], yrShown.viewKey))
-    var w = Math.max(1, Math.round(yrMapWidth / 4))
-    var h = Math.max(1, Math.round(yrMapHeight / 4))
-    yrFlowBusy = yrShownKey
+    var loop = yrFlowTarget
+    if (radarSmoothing !== "flow" || !yrRadarActive || !loop || loop.frames.length < 2 || loop.flow
+        || yrFlowBusy !== "" || yrFlowWorking || tilesDir === "") return
+    var failure = yrFlowFailure
+    if (failure.key === loop.key) {
+      if (failure.attempts >= 3) return
+      if (Date.now() < failure.nextMs) {
+        flowRetry.interval = Math.max(1, failure.nextMs - Date.now())
+        flowRetry.restart()
+        return
+      }
+    } else {
+      yrFlowFailure = { key: loop.key, attempts: 0, nextMs: 0 }
+    }
+    flowRetry.stop()
+    var files = loop.frames.map(function(frame) { return Model.radarFrameFile(frame, loop.viewKey) })
+    var w = Math.max(1, Math.round(loop.width / 4))
+    var h = Math.max(1, Math.round(loop.height / 4))
+    yrFlowBusy = loop.key
     yrFlowStartMs = Date.now()
-    yrFlowJob = { key: yrShownKey, command: Model.flowInputCommand(tilesDir, files, w, h), w: w, h: h,
-                  count: files.length, mapWidth: yrMapWidth, mapHeight: yrMapHeight }
+    yrFlowJob = { key: loop.key, loop: loop, command: Model.flowInputCommand(tilesDir, files, w, h), w: w, h: h,
+      count: files.length, mapWidth: loop.width, mapHeight: loop.height,
+      options: { times: loop.frames.map(function(f) { return f.timeMs }),
+                 forecast: loop.frames.map(function(f) { return !!f.forecast }) } }
     yrFlowWorking = true
   }
 
-  // Ends the process and worker (not from inside their own handlers).
+  // Deferring destruction lets the current worker/process handler return.
   function stopFlowWork() {
-    yrFlowJob = null
-    Qt.callLater(function() { root.yrFlowWorking = false })
+    Qt.callLater(function() {
+      root.yrFlowWorking = false
+      root.yrFlowJob = null
+      Qt.callLater(root.maybeEstimateFlow)
+    })
   }
 
   function flowFailed(reason) {
+    var key = yrFlowBusy
     if (reason) console.warn("nordic-weather: flow failed: " + reason)
     stopFlowWork()
     yrFlowBusy = ""
+    var target = yrFlowTarget
+    if (!target || target.key !== key) return
+    var attempts = yrFlowFailure.key === key ? yrFlowFailure.attempts + 1 : 1
+    yrFlowFailure = { key: key, attempts: attempts, nextMs: Date.now() + (attempts === 1 ? 1000 : 5000) }
+    // Keep a working loop during retries. First open still gets usable
+    // playback; after three failures a replacement may also use Fade.
+    if (!yrShownValid || attempts >= 3) {
+      yrPending = Object.assign({}, target, { flowFailed: true })
+      publishYrLoop(false)
+    }
   }
 
   function flowResult(message) {
-    stopFlowWork()
-    if (!message.result || message.key !== yrShownKey) {
-      flowFailed(message.error)
-      Qt.callLater(maybeEstimateFlow)
+    var job = yrFlowJob
+    if (!message.result) { flowFailed(message.error || "no motion field"); return }
+    var r = message.result
+    if (!job || !yrFlowTarget || message.key !== yrFlowTarget.key) {
+      stopFlowWork()
+      yrFlowBusy = ""
       return
     }
-    var r = message.result
-    flowFile.pending = { key: message.key, workerMs: message.ms,
-      info: { gx: r.gx, gy: r.gy, pairs: r.pairs, cellW: r.cellW, cellH: r.cellH, unit: r.unit, knownCells: r.knownCells } }
+    stopFlowWork()
+    yrFlowSequence++
+    flowFile.pending = { key: message.key, loop: job.loop, workerMs: message.ms,
+      info: { gx: r.gx, gy: r.gy, pairs: r.pairs, cellW: r.cellW, cellH: r.cellH, unit: r.unit,
+              knownCells: r.knownCells,
+              file: tilesDir + "/flow_" + yrFlowSession + "_" + yrFlowSequence + ".ppm" } }
     flowFile.setText(r.ppm)
   }
 
   LazyLoader {
     active: root.yrFlowWorking
-
     Scope {
       Process {
         command: root.yrFlowJob ? root.yrFlowJob.command : []
         running: root.yrFlowJob !== null
-        stdout: StdioCollector {
-          waitForEnd: true
-          onStreamFinished: {
-            var job = root.yrFlowJob
-            root.yrFlowInputMs = Date.now() - root.yrFlowStartMs
-            if (!job || text === "" || job.key !== root.yrShownKey) {
-              root.flowFailed(job && text === "" ? "no input from ImageMagick" : "")
-              Qt.callLater(root.maybeEstimateFlow)
-              return
-            }
-            flowWorker.sendMessage({ key: job.key, data: text, w: job.w, h: job.h, count: job.count,
-                                     mapWidth: job.mapWidth, mapHeight: job.mapHeight })
+        stdout: StdioCollector { id: flowInputOutput; waitForEnd: true }
+        stderr: StdioCollector { id: flowInputError; waitForEnd: true }
+        onExited: function(exitCode) {
+          var job = root.yrFlowJob
+          root.yrFlowInputMs = Date.now() - root.yrFlowStartMs
+          if (!job || !root.yrFlowTarget || job.key !== root.yrFlowTarget.key) {
+            root.stopFlowWork()
+            root.yrFlowBusy = ""
+            return
           }
+          if (exitCode !== 0 || flowInputOutput.text === "") {
+            root.flowFailed("analysis input: " + flowInputError.text.trim())
+            return
+          }
+          flowWorker.sendMessage({ key: job.key, data: flowInputOutput.text, w: job.w, h: job.h, count: job.count,
+            mapWidth: job.mapWidth, mapHeight: job.mapHeight, options: job.options })
         }
       }
-
       WorkerScript {
         id: flowWorker
         source: Qt.resolvedUrl("FlowWorker.mjs")
@@ -917,25 +1011,27 @@ Scope {
   FileView {
     id: flowFile
     property var pending: null
-    path: root.tilesDir !== "" ? root.tilesDir + "/flow.ppm" : ""
+    path: pending ? pending.info.file : ""
+    atomicWrites: true
     preload: false
     printErrors: false
     onSaved: {
       var p = pending
       pending = null
-      if (p) {
-        root.yrFlowInfo = p.info
-        root.yrFlowKey = p.key
-        root.yrFlowRevision++
-        console.log("nordic-weather: flow estimated, " + p.info.pairs + " pairs, " + p.info.knownCells + " cells with rain; input "
-          + root.yrFlowInputMs + " ms, worker " + p.workerMs + " ms, total " + (Date.now() - root.yrFlowStartMs) + " ms")
+      if (p && root.yrFlowTarget && p.key === root.yrFlowTarget.key) {
+        root.yrPending = Object.assign({}, p.loop, { flow: p.info, flowFailed: false })
+        root.yrFlowFailure = { key: p.key, attempts: 0, nextMs: 0 }
+        root.publishYrLoop(false)
+        console.log("nordic-weather: flow estimated, " + p.info.pairs + " pairs, " + p.info.knownCells
+          + " reliable cells; input " + root.yrFlowInputMs
+          + " ms, worker " + p.workerMs + " ms, total " + (Date.now() - root.yrFlowStartMs) + " ms")
       }
       root.yrFlowBusy = ""
       Qt.callLater(root.maybeEstimateFlow)
     }
     onSaveFailed: {
       pending = null
-      root.yrFlowBusy = ""
+      root.flowFailed("could not save motion atlas")
     }
   }
 
@@ -987,21 +1083,30 @@ Scope {
     }
   }
 
-  // The radar animation (one frame counter for every panel): a new frame
-  // every 250 ms, drawn yrSubsteps times.
+  // A capped update timer; elapsed time controls the timeline. The
+  // renderer reports readiness for this exact loop/frame/mode, so a late
+  // decode freezes time instead of skipping into the middle of a blend.
+  // Readiness lapses briefly at every step (until the panel reports the new
+  // one), so the timer keeps running and a tick while not ready holds time.
   Timer {
     interval: Math.round(250 / root.yrSubsteps)
     repeat: true
-    running: root.yrRadarActive && root.yrPlaying && !root.yrPaused && root.yrDisplay.frames.length > 1
+    running: root.yrRadarActive && root.yrPlaying && !root.yrPaused
+    onRunningChanged: root.yrClockMs = Date.now()
     onTriggered: {
-      if (root.yrSub + 1 < root.yrSubsteps) {
-        root.yrSub++
+      var now = Date.now()
+      if (!root.yrImagesReady) {
+        root.yrClockMs = now
         return
       }
-      root.yrSub = 0
-      var next = root.yrUpcomingIndex
-      if (next === root.yrFrame) return
-      root.yrPlayhead = { frame: next, tick: root.yrPlayhead.tick + 1 }
+      var next = Model.radarAdvance(root.yrFrame, root.yrPlayhead.tick, root.yrPhaseMs,
+                                    now - root.yrClockMs, root.yrShown.frames.length, root.yrPlayLimit)
+      root.yrClockMs = now
+      if (next.tick !== root.yrPlayhead.tick) {
+        if (root.publishYrLoop(true, next.frame)) return
+        root.yrPlayhead = { frame: next.frame, tick: next.tick }
+      }
+      root.yrPhaseMs = next.phaseMs
     }
   }
 }

@@ -654,6 +654,89 @@ test("flow input: one magick call over the loop's frames, raw grey in base64", {
   const first = Array.from(out.subarray(0, 8)), second = Array.from(out.subarray(8, 16))
   assert.ok(first[0] > 100 && first[4] > 100 && first[3] < 10 && first[7] < 10, `first ${first}`)
   assert.deepEqual(second, [0, 0, 0, 0, 0, 0, 0, 0])
+  // It must be identical to the original all-images-first conversion.
+  const original = execFileSync("magick", [path.join(dir, "f_a.png"), path.join(dir, "f_b.png"),
+    "-resize", "4x2!", "-colorspace", "HCL", "-channel", "G", "-separate", "+channel", "-depth", "8", "gray:-"])
+  assert.deepEqual(out, original)
+  // A second loop reuses analysis pixels without launching ImageMagick.
+  const bin = path.join(dir, "bin")
+  fs.mkdirSync(bin)
+  fs.writeFileSync(path.join(bin, "magick"), "#!/bin/sh\nexit 99\n", { mode: 0o755 })
+  const warm = execFileSync(cmd[0], cmd.slice(1), { env: { ...process.env, PATH: bin + ":" + process.env.PATH } })
+  assert.deepEqual(Buffer.from(warm.toString(), "base64"), out)
+  // Truncated cache entries are regenerated, not sent to the worker.
+  fs.writeFileSync(path.join(dir, "a_v2_4_2_f_a.gray"), "x")
+  assert.deepEqual(Buffer.from(execFileSync(cmd[0], cmd.slice(1)).toString(), "base64"), out)
+  const missing = M.flowInputCommand(dir, ["missing.png"], 4, 2)
+  assert.throws(() => execFileSync(missing[0], missing.slice(1), { stdio: "pipe" }))
+})
+
+test("radar: rotating slots retain decoded endpoints across advancement and wrap", () => {
+  const frames = Array.from({ length: 5 }, (_, i) => ({ timeMs: i * 300000 }))
+  let prev = M.radarImageSlots(frames, 0, 0)
+  for (let tick = 1; tick <= 12; tick++) {
+    const next = M.radarImageSlots(frames, tick % frames.length, tick)
+    assert.equal(next.current, prev.upcoming)
+    assert.equal(next.frames[next.current], prev.frames[prev.upcoming])
+    assert.equal(next.frames.filter((f, i) => f !== prev.frames[i]).length, 1)
+    prev = next
+  }
+  for (const n of [1, 2]) {
+    const a = M.radarImageSlots(frames.slice(0, n), 0, 0)
+    const b = M.radarImageSlots(frames.slice(0, n), 1 % n, 1)
+    assert.deepEqual(a.frames, b.frames)
+  }
+  assert.deepEqual(M.radarImageSlots([], 0, 0).frames, [null, null, null])
+})
+
+test("radar: delayed callbacks preserve elapsed position; suspend and clock jumps reanchor", () => {
+  let position = { frame: 0, tick: 0, phaseMs: 0 }
+  let total = 0
+  for (const dt of [85, 84, 92, 80, 82, 89, 91, 80, 81, 110, 350]) {
+    total += dt
+    position = M.radarAdvance(position.frame, position.tick, position.phaseMs, dt, 4)
+    assert.equal(position.frame, Math.floor(total / 250) % 4)
+    assert.equal(position.tick, Math.floor(total / 250))
+    assert.equal(position.phaseMs, total % 250)
+  }
+  for (const dt of [-10000, 30000, NaN])
+    assert.deepEqual(M.radarAdvance(position.frame, position.tick, position.phaseMs, dt, 4), position)
+  assert.deepEqual(M.radarAdvance(0, 0, 0, 1000, 1), { frame: 0, tick: 0, phaseMs: 0 })
+})
+
+test("radar: a loop still loading plays what is assembled, then waits on its newest frame", () => {
+  const frames = Array.from({ length: 10 }, (_, i) => ({ timeMs: i * 300000 }))
+  // Six of ten assembled: slots stay within them, wrapping inside the prefix.
+  const slots = M.radarImageSlots(frames, 5, 5, 6)
+  assert.ok(slots.frames.every((f) => f === null || f.timeMs < 6 * 300000))
+  assert.equal(slots.frames[slots.current], frames[5])
+  // Playback reaches frame 5 and holds there, phase 0, however long it waits.
+  let p = { frame: 3, tick: 3, phaseMs: 200 }
+  p = M.radarAdvance(p.frame, p.tick, p.phaseMs, 100, 10, 6)
+  assert.deepEqual(p, { frame: 4, tick: 4, phaseMs: 50 })
+  p = M.radarAdvance(p.frame, p.tick, p.phaseMs, 450, 10, 6)
+  assert.deepEqual(p, { frame: 5, tick: 5, phaseMs: 0 })
+  assert.deepEqual(M.radarAdvance(5, 5, 0, 400, 10, 6), { frame: 5, tick: 5, phaseMs: 0 })
+  // More frames arrive: it carries on. A complete loop wraps to the start.
+  assert.deepEqual(M.radarAdvance(5, 5, 0, 260, 10, 12), { frame: 6, tick: 6, phaseMs: 10 })
+  assert.deepEqual(M.radarAdvance(9, 9, 0, 260, 10, 10), { frame: 0, tick: 10, phaseMs: 10 })
+})
+
+test("radar: a replacement loop carries on at the same time", () => {
+  const frames = [300000, 600000, 900000].map((timeMs) => ({ timeMs }))
+  assert.equal(M.radarFrameAt(frames, 600000), 1)
+  assert.equal(M.radarFrameAt(frames, 450000), 1)   // between frames: the next one
+  assert.equal(M.radarFrameAt(frames, 0), 0)        // dropped off the start
+  assert.equal(M.radarFrameAt(frames, 1200000), 0)  // past the end: from the start
+  assert.equal(M.radarFrameAt([], 0), 0)
+})
+
+test("radar: source gaps and the loop seam are never interpolated", () => {
+  const frames = [0, 300000, 1500000].map(timeMs => ({ timeMs }))
+  assert.equal(M.radarCanBlend(frames, 0, 1), true)
+  assert.equal(M.radarCanBlend(frames, 1, 2), false)
+  assert.equal(M.radarCanBlend(frames, 2, 0), false)
+  assert.equal(M.radarCanBlend([], 0, 1), false)
 })
 
 test("list keys: unique, stable for unchanged content, new for changed content", () => {

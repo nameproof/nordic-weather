@@ -1153,13 +1153,74 @@ function radarNextFrame(current, count, limit) {
   return next !== 0 && next >= limit ? cur : next
 }
 
+// Three rotating image slots give the next frame a whole source-frame
+// interval to load before it is sampled. Two-frame loops use two slots.
+// `ready`: of a loop still loading, the frames assembled so far (a prefix);
+// slots never point past them.
+function radarImageSlots(frames, frame, tick, ready) {
+  var slots = [null, null, null]
+  var n = Math.min(frames.length, ready === undefined ? frames.length : ready)
+  var count = Math.min(3, n)
+  if (!count) return { frames: slots, current: 0, upcoming: 0 }
+  var current = tick % count
+  frame = Math.min(frame, n - 1)
+  for (var i = 0; i < count; i++) slots[(current + i) % count] = frames[(frame + i) % n]
+  return { frames: slots, current: current, upcoming: (current + 1) % count }
+}
+
+// Elapsed time, rather than callback count, determines position. After a
+// long stall/suspend or wall-clock correction, reanchor without racing
+// through unloaded frames. Normal scheduling delays retain their remainder.
+// A loop still loading (ready < count) plays up to its newest assembled
+// frame and waits there, rather than wrapping, until more arrive.
+function radarAdvance(frame, tick, phaseMs, elapsedMs, count, ready) {
+  if (count < 2) return { frame: 0, tick: tick, phaseMs: 0 }
+  var dt = elapsedMs >= 0 && elapsedMs <= 500 ? elapsedMs : 0
+  var elapsed = phaseMs + dt
+  var steps = Math.floor(elapsed / 250)
+  if (ready !== undefined && ready < count) {
+    var room = Math.max(0, ready - 1 - frame)
+    if (steps >= room) return { frame: frame + room, tick: tick + room, phaseMs: 0 }
+  }
+  return { frame: (frame + steps) % count, tick: tick + steps, phaseMs: elapsed % 250 }
+}
+
+// Where a replacement loop carries on: the first of its frames at or after
+// timeMs (loops shift by a frame or so per update), else the start.
+function radarFrameAt(frames, timeMs) {
+  for (var i = 0; i < frames.length; i++) if (frames[i].timeMs >= timeMs) return i
+  return 0
+}
+
+function radarCanBlend(frames, current, upcoming) {
+  return upcoming === current + 1 && !!frames[current] && !!frames[upcoming]
+    && frames[upcoming].timeMs - frames[current].timeMs === 300000
+}
+
 // Rain-strength images of a loop's frames for Flow.mjs, w×h each (a
 // quarter of the map), as raw 8-bit grey in base64 on stdout: ImageMagick's
 // HCL chroma (rain is a saturated colour; black "no rain" and white "no
 // coverage" are both 0).
 function flowInputCommand(dir, files, w, h) {
-  var script = 'cd "$1" && size="$2x$3!" && shift 3'
-    + ' && magick "$@" -resize "$size" -colorspace HCL -channel G -separate +channel -depth 8 gray:- | base64 -w0'
+  // Resize each input before opening the next. Cache the small, lossless
+  // analysis image as well: overlapping loops need not decode it again.
+  // A single ImageMagick process fills all misses, with bounded threading.
+  var script = 'set -euo pipefail\ncd "$1"; w=$2; h=$3; shift 3\n'
+    + 'args=(); outputs=(); missing=()\n'
+    + 'for f in "$@"; do\n'
+    + '  out="a_v2_${w}_${h}_${f%.png}.gray"; outputs+=("$out")\n'
+    + '  if [[ ! -s $out ]] || [[ $(stat -c%s "$out") != $((w * h)) ]]; then\n'
+    + '    missing+=("$out")\n'
+    + '    args+=("(" "$f" -resize "${w}x${h}!" -colorspace HCL -channel G -separate +channel -depth 8 -write "gray:$out.part" +delete ")")\n'
+    + '  fi\n'
+    + 'done\n'
+    + 'if (( ${#missing[@]} )); then\n'
+    + '  magick -limit thread 2 "${args[@]}" -exit\n'
+    + '  for out in "${missing[@]}"; do [[ $(stat -c%s "$out.part") == $((w * h)) ]]; mv -f "$out.part" "$out"; done\n'
+    + 'fi\n'
+    + 'if (( ${#outputs[@]} )); then cat "${outputs[@]}" | base64 -w0; touch "${outputs[@]}"; fi\n'
+    + 'find . -name "a_v2_*.gray*" -mmin +120 -delete 2>/dev/null\n'
+    + 'find . -name "flow_*.ppm" -mmin +120 -delete 2>/dev/null\n'
   return ["bash", "-c", script, "bash", dir, String(w), String(h)].concat(files)
 }
 
@@ -1252,7 +1313,7 @@ function frameComposeCommand(dir, width, height, tilePx, specs) {
     + '    [[ -s $dir/$f ]] || return 0\n'
     + '    args+=("(" "$dir/$f" -resize "${px}x${px}!" ")" -geometry "$(printf "%+d%+d" "$l" "$t")" -composite)\n'
     + '  done\n'
-    + '  magick "${args[@]}" -define png:compression-level=1 "PNG24:$out.part" 2>/dev/null && mv -f "$out.part" "$out" || rm -f "$out.part"\n'
+    + '  magick -limit thread 1 "${args[@]}" -define png:compression-level=1 "PNG24:$out.part" 2>/dev/null && mv -f "$out.part" "$out" || rm -f "$out.part"\n'
     + '}\n'
     + 'n=0\n'
     + 'for spec in "$@"; do compose "$spec" & n=$((n + 1)); (( n % 4 == 0 )) && wait; done\n'
@@ -1388,6 +1449,10 @@ if (typeof module !== "undefined") {
     radarFramesKey: radarFramesKey,
     rulerTicks: rulerTicks,
     radarNextFrame: radarNextFrame,
+    radarImageSlots: radarImageSlots,
+    radarAdvance: radarAdvance,
+    radarCanBlend: radarCanBlend,
+    radarFrameAt: radarFrameAt,
     flowInputCommand: flowInputCommand,
     mapViewKey: mapViewKey,
     radarFrameFile: radarFrameFile,

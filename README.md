@@ -28,6 +28,11 @@ the data behind yr.no.
     changes it.
 
   Nothing is downloaded or drawn until the side panel is open.
+- **Radar smoothing (experimental):** compare **Off**, **Fade**, and **Flow**
+  on the yr.no map, at 8, 12, or 16 FPS. Flow estimates motion locally;
+  it needs no AI service or API key. Try Flow at 12 FPS first. Off remains
+  the initial mode, and saved mode/FPS choices are preserved. Pausing holds
+  the interpolated image; scrubbing selects an original radar frame.
 - **Location:** click the place name and search. The location is saved in the
   same file the built-in widget uses, so switching between the two keeps it.
 - **Language:** Swedish when the system locale is Swedish, English otherwise.
@@ -82,7 +87,8 @@ Map data: © [OpenStreetMap](https://www.openstreetmap.org/copyright) contributo
 ## Development
 
 ```sh
-npm test                    # Model.js unit tests against saved API responses
+npm test                    # model, motion, shader build, Qt and service tests
+RADAR_RENDER_TESTS=1 npm test # also check shader pixels with offscreen OpenGL
 scripts/build-shaders       # compile shaders/*.frag to .qsb (dev-install runs it)
 scripts/dev-install         # copy into ~/.config/omarchy/plugins/ (hot-reloads)
 scripts/dev-install --enable
@@ -92,6 +98,12 @@ scripts/dev-install --enable
 The shell notices changed plugin files but keeps using the widget's
 already-compiled QML and JS while it is on screen, so `dev-install` restarts
 the shell whenever the code changed.
+
+Qt runtime tests use isolated temporary caches and make no network requests.
+They require Qt Quick Test, ImageMagick, and (for the service test) Quickshell
+and Omarchy. Missing runtime tools are reported as skipped tests. The optional
+pixel test requires an OpenGL RHI renderer; the software scene graph cannot
+render `ShaderEffect`.
 
 ### Base map
 

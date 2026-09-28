@@ -1,10 +1,12 @@
 #version 440
 // The assembled radar frame on screen, drawn part of the way to the next
 // frame (the smoothing test): blend 0 is the frame itself, 1 the next one.
-// Crossfade mixes the two frames' rain. Flow also moves each frame's rain
-// along the motion between them (Flow.mjs), so it slides instead of
-// fading. Rain and no-coverage are drawn as in radar.frag; coverage never
-// moves, so the no-coverage lines come from the current frame alone.
+// Fade mixes the two frames' rain. Flow moves rain along the motion between
+// them (Flow.mjs), so it slides instead of fading. Rain and no-coverage are
+// drawn as in radar.frag. No-coverage comes from one image for the whole
+// loop, the latest observation: yr.no's frames disagree on it (a radar
+// missing from one observation, forecasts filling the gaps as they run),
+// which would make it flicker through the loop.
 layout(location = 0) in vec2 qt_TexCoord0;
 layout(location = 0) out vec4 fragColor;
 layout(std140, binding = 0) uniform buf {
@@ -28,6 +30,7 @@ layout(std140, binding = 0) uniform buf {
 layout(binding = 1) uniform sampler2D sourceA;
 layout(binding = 2) uniform sampler2D sourceB;
 layout(binding = 3) uniform sampler2D flowField;
+layout(binding = 4) uniform sampler2D coverageMap;
 
 // See radar.frag: premultiplied rain from an opaque palette colour.
 vec4 rainOf(vec4 c) {
@@ -39,30 +42,56 @@ vec4 rainOf(vec4 c) {
 // Motion from this frame to the next at uv, in uv units. The atlas stacks
 // flowPairs fields of flowGrid cells top to bottom; y stays between cell
 // centres so filtering never reads the neighbouring pair's field.
-vec2 flowAt(vec2 uv) {
+vec3 flowAt(vec2 uv) {
     vec2 g = clamp(uv * mapSize / flowCell, vec2(0.5), flowGrid - vec2(0.5));
     vec2 t = vec2(g.x / flowGrid.x, (flowPair * flowGrid.y + g.y) / (flowGrid.y * flowPairs));
-    vec2 px = (texture(flowField, t).rg * 255.0 - 128.0) / flowUnit;
-    return px / mapSize;
+    vec3 field = texture(flowField, t).rgb;
+    vec2 px = (field.rg * 255.0 - 128.0) / flowUnit;
+    return vec3(px / mapSize, smoothstep(0.15, 0.65, field.b));
+}
+
+// Four filtered taps a third of a pixel apart: a small softening that is
+// the same however far a frame is moved. Plain filtering softens a frame
+// moved by half a pixel more than one on whole pixels (a pulse, 16% in
+// texture contrast); unfiltered, rain moves in uneven whole-pixel strides
+// (a stagger).
+vec4 soft(sampler2D image, vec2 uv) {
+    vec2 d = 0.35 / mapSize;
+    return 0.25 * (texture(image, uv + vec2(-d.x, -d.y)) + texture(image, uv + vec2(d.x, -d.y))
+                 + texture(image, uv + vec2(-d.x, d.y)) + texture(image, uv + vec2(d.x, d.y)));
 }
 
 void main() {
     vec4 a = texture(sourceA, qt_TexCoord0);
     vec4 rain;
-    if (blend <= 0.0) {
+    if (flowOn > 0.5) {
+        // One real frame, moved along the motion: this one pushed forward
+        // for the first half of the interval, the next one pulled back for
+        // the second. Never an average of the two, which would wash the
+        // rain's texture out between frames (a 4 Hz pulse); colours stay
+        // those of a radar image, changing once per frame as with smoothing
+        // off. Motion counts as far as it is trusted, so where it isn't,
+        // rain just switches frame halfway.
+        vec2 uv = qt_TexCoord0;
+        bool next = blend >= 0.5;
+        if (blend > 0.0) {
+            vec3 field = flowAt(qt_TexCoord0);
+            vec2 v = field.xy * field.z;
+            uv = next ? uv + (1.0 - blend) * v : uv - blend * v;
+            // Outside the map crop there is nothing to move in.
+            if (any(lessThan(uv, vec2(0.0))) || any(greaterThan(uv, vec2(1.0)))) uv = qt_TexCoord0;
+        }
+        rain = rainOf(next ? soft(sourceB, uv) : soft(sourceA, uv));
+    } else if (blend <= 0.0) {
         rain = rainOf(a);
     } else {
-        // Rain at p now was at p − blend·v in this frame and will be at
-        // p + (1 − blend)·v in the next.
-        vec2 v = flowOn > 0.5 ? flowAt(qt_TexCoord0) : vec2(0.0);
-        vec4 ra = rainOf(flowOn > 0.5 ? texture(sourceA, qt_TexCoord0 - blend * v) : a);
-        vec4 rb = rainOf(texture(sourceB, qt_TexCoord0 + (1.0 - blend) * v));
-        rain = mix(ra, rb, blend);
+        rain = mix(rainOf(a), rainOf(texture(sourceB, qt_TexCoord0)), blend);
     }
     rain *= strength;
 
-    float m = max(a.r, max(a.g, a.b));
-    float s = m - min(a.r, min(a.g, a.b));
+    vec4 cov = texture(coverageMap, qt_TexCoord0);
+    float m = max(cov.r, max(cov.g, cov.b));
+    float s = m - min(cov.r, min(cov.g, cov.b));
     float outside = smoothstep(0.5, 0.95, m) * (1.0 - smoothstep(0.05, 0.15, s));
     float u = (gl_FragCoord.x + gl_FragCoord.y) * 0.70710678;
     float d = abs(mod(u, lineSpacing) - lineSpacing * 0.5);
