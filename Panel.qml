@@ -363,9 +363,14 @@ Panel {
           spacing: Style.space(12)
 
           // ---- Hero: icon + temperature + condition left; place and stats right.
+          // A little room above and more below, so the stats' second line
+          // doesn't crowd the nowcast row.
           Item {
+            id: hero
+            readonly property int padTop: Style.space(4)
+            readonly property int padBottom: Style.space(8)
             width: parent.width
-            height: Math.max(heroLeft.height, heroRight.height)
+            height: Math.max(heroLeft.height, heroRight.height) + padTop + padBottom
 
             // Icon + temperature + condition. The icon is centred on the
             // painted digits of the temperature (not on the whole block,
@@ -375,6 +380,7 @@ Panel {
               anchors.left: parent.left
               anchors.leftMargin: Style.space(12)
               anchors.verticalCenter: parent.verticalCenter
+              anchors.verticalCenterOffset: (hero.padTop - hero.padBottom) / 2
               visible: root.view.ready
               width: heroIcon.implicitWidth + Style.space(14) + heroTemp.width
               height: heroTemp.height
@@ -446,6 +452,7 @@ Panel {
               anchors.right: parent.right
               anchors.rightMargin: Style.space(16)
               anchors.verticalCenter: parent.verticalCenter
+              anchors.verticalCenterOffset: (hero.padTop - hero.padBottom) / 2
               spacing: Style.space(12)
 
               // Place name; click to search or pick a favourite.

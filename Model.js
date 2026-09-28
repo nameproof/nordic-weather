@@ -14,7 +14,7 @@
 
 var PLUGIN_ID = "io.github.nameproof.nordic-weather"
 var VERSION = "0.1.0"
-var USER_AGENT = PLUGIN_ID + "/" + VERSION + " github.com/nameproof"
+var USER_AGENT = PLUGIN_ID + "/" + VERSION + " github.com/nameproof/nordic-weather"
 var MET_BASE = "https://api.met.no/weatherapi"
 var HOUR_MS = 3600 * 1000
 var DAY_MS = 24 * HOUR_MS
