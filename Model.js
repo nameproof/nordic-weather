@@ -967,6 +967,136 @@ function buildView(input) {
 
 // ---------------------------------------------------------------- radar map
 
+// ---------------------------------------------------------------- lightning
+
+// Lightning strikes in the Nordics from yr.no's lightning map (undocumented,
+// like its radar tiles): the last 2 hours, which covers the radar loop's past
+// plus the time a strike stays on the map.
+var YR_LIGHTNING_URL = "https://www.yr.no/api/v0/lightning-events?fromHours=2"
+// A strike's bolt shows in the frame it falls in, and dimmer in the next;
+// a small dot marks it for this long.
+var LIGHTNING_FRAME_MS = 5 * 60000
+var LIGHTNING_TRAIL_MS = 10 * 60000
+
+// yr.no's body: { historicalData: "[[time (s), lon, lat, …], …]" } (a JSON
+// string inside JSON). → [{ ms, lat, lon, shape }] oldest first, or null
+// when unreadable.
+function parseLightning(text) {
+  var data = parseJson(text)
+  if (!data || typeof data.historicalData !== "string") return null
+  var events = parseJson(data.historicalData)
+  if (!Array.isArray(events)) return null
+  var out = []
+  for (var i = 0; i < events.length; i++) {
+    var e = events[i]
+    if (!Array.isArray(e) || !isNum(e[0]) || !isNum(e[1]) || !isNum(e[2])) continue
+    out.push({ ms: e[0] * 1000, lon: e[1], lat: e[2], shape: lightningShape(lightningSeed(e[0], e[1], e[2])) })
+  }
+  out.sort(function(a, b) { return a.ms - b.ms })
+  return out
+}
+
+// Which moment the map shows strikes for at a radar frame, or null for a
+// forecast frame (strikes can't be forecast). Past frames: the frame's
+// time. The newest observation ("now"): the latest strike data, which runs
+// ahead of the radar.
+function lightningMoment(frameMs, nowFrameMs, dataMs) {
+  if (frameMs > nowFrameMs) return null
+  return frameMs < nowFrameMs ? frameMs : Math.max(nowFrameMs, isNum(dataMs) ? dataMs : 0)
+}
+
+// Which strikes get a bolt at a moment (ms), from lightningPoints:
+// { fresh, after }. Fresh: the moment's own 5 minutes; after: the 5
+// minutes before (drawn dimmer). Newest first, a bolt within 10 px of one
+// already chosen is left out, so a dense cell reads as separate bolts.
+function lightningBolts(points, moment) {
+  var fresh = [], after = [], chosen = []
+  for (var i = points.length - 1; i >= 0; i--) {
+    var p = points[i]
+    var age = moment - p.ms
+    if (age < 0) continue
+    if (age >= 2 * LIGHTNING_FRAME_MS) break
+    var near = false
+    for (var d = 0; d < chosen.length && !near; d++)
+      near = Math.abs(chosen[d].x - p.x) < 10 && Math.abs(chosen[d].y - p.y) < 10
+    if (near) continue
+    chosen.push(p)
+    if (age < LIGHTNING_FRAME_MS) fresh.push(p)
+    else after.push(p)
+  }
+  return { fresh: fresh, after: after }
+}
+
+// A bolt's shape in px, ending at the strike (0, 0): a jagged main channel
+// from above, sometimes forking once or twice partway down. The same seed
+// always gives the same bolt.
+function lightningRandom(seed) {
+  var a = seed >>> 0
+  return function() {
+    a = (a + 0x6D2B79F5) >>> 0
+    var t = a
+    t = Math.imul(t ^ (t >>> 15), t | 1)
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61)
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296
+  }
+}
+
+// Midpoint displacement: each pass kinks every segment sideways by up to
+// `spread` of its length, so the zigzags come in several sizes.
+function lightningJagged(rand, x0, y0, x1, y1, passes, spread) {
+  var pts = [[x0, y0], [x1, y1]]
+  for (var d = 0; d < passes; d++) {
+    var next = [pts[0]]
+    for (var i = 1; i < pts.length; i++) {
+      var a = pts[i - 1], b = pts[i]
+      var dx = b[0] - a[0], dy = b[1] - a[1]
+      var len = Math.sqrt(dx * dx + dy * dy) || 1
+      var off = (rand() - 0.5) * spread * len
+      next.push([(a[0] + b[0]) / 2 - dy / len * off, (a[1] + b[1]) / 2 + dx / len * off])
+      next.push(b)
+    }
+    pts = next
+  }
+  return pts
+}
+
+function lightningShape(seed) {
+  var rand = lightningRandom(seed)
+  var h = 13 + rand() * 9
+  var main = lightningJagged(rand, (rand() - 0.5) * 8, -h, 0, 0, 3, 0.75)
+  var branches = []
+  var count = rand() < 0.5 ? (rand() < 0.3 ? 2 : 1) : 0
+  for (var k = 0; k < count; k++) {
+    var from = main[1 + Math.floor(rand() * Math.floor(main.length * 0.55))]
+    var side = rand() < 0.5 ? -1 : 1
+    var len = h * (0.3 + rand() * 0.35)
+    var angle = (25 + rand() * 35) * Math.PI / 180
+    branches.push(lightningJagged(rand, from[0], from[1],
+      from[0] + side * Math.sin(angle) * len, from[1] + Math.cos(angle) * len, 2, 0.8))
+  }
+  return { main: main, branches: branches }
+}
+
+// A seed from a strike's time (s) and place, stable across views.
+function lightningSeed(timeS, lon, lat) {
+  return (Math.imul(timeS | 0, 2654435761) ^ Math.imul(Math.round(lon * 1e4), 40503) ^ Math.round(lat * 1e4)) >>> 0
+}
+
+// Strikes in a view's pixels, oldest first, dropping those more than
+// `margin` px outside the width×height map.
+function lightningPoints(strikes, view, width, height, margin) {
+  var out = []
+  if (!view) return out
+  for (var i = 0; i < strikes.length; i++) {
+    var w = worldTile(strikes[i].lat, strikes[i].lon, view.z)
+    var x = w.x * view.px - view.left, y = w.y * view.px - view.top
+    if (x < -margin || y < -margin || x > width + margin || y > height + margin) continue
+    out.push({ x: x, y: y, ms: strikes[i].ms, shape: strikes[i].shape })
+  }
+  out.sort(function(a, b) { return a.ms - b.ms })
+  return out
+}
+
 // ---------------------------------------------------------------- yr.no radar map
 
 // A radar map like yr.no's: our own base map (tiles rendered from
@@ -1147,6 +1277,14 @@ function radarFrames(obsText, nowcastText) {
       frames.push({ timeMs: nowcast[j].timeMs, template: nowcast[j].template, runId: nowcast[j].runId, forecast: true })
   }
   return { frames: frames, nowIndex: obs.length - 1 }
+}
+
+// The frame whose no-coverage areas the whole loop uses: its latest
+// observation, or while the loop is still being assembled and that frame
+// isn't yet, the newest one that is.
+function radarCoverageIndex(loop) {
+  var ready = loop.ready === undefined ? loop.frames.length : loop.ready
+  return Math.max(0, Math.min(loop.nowIndex, ready - 1))
 }
 
 // Three rotating image slots give the next frame a whole source-frame
@@ -1411,6 +1549,7 @@ if (typeof module !== "undefined") {
     radarFramesKey: radarFramesKey,
     rulerTicks: rulerTicks,
     radarImageSlots: radarImageSlots,
+    radarCoverageIndex: radarCoverageIndex,
     radarStep: radarStep,
     radarFrameAt: radarFrameAt,
     mapViewKey: mapViewKey,
@@ -1462,6 +1601,15 @@ if (typeof module !== "undefined") {
     buildCurrent: buildCurrent,
     buildHourlyDays: buildHourlyDays,
     pressureAt: pressureAt,
+    YR_LIGHTNING_URL: YR_LIGHTNING_URL,
+    LIGHTNING_FRAME_MS: LIGHTNING_FRAME_MS,
+    LIGHTNING_TRAIL_MS: LIGHTNING_TRAIL_MS,
+    parseLightning: parseLightning,
+    lightningMoment: lightningMoment,
+    lightningBolts: lightningBolts,
+    lightningPoints: lightningPoints,
+    lightningShape: lightningShape,
+    lightningSeed: lightningSeed,
     buildPressure: buildPressure,
     precipGlyph: precipGlyph,
     buildLongRange: buildLongRange,

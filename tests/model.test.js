@@ -698,3 +698,69 @@ test("list keys: unique, stable for unchanged content, new for changed content",
   assert.ok(M.parseGeocodingResults(fixture("geocode-alings.json")).every((r) => typeof r.key === "string"))
   assert.ok(a.nowcast.points.every((p) => typeof p.key === "string"))
 })
+
+test("lightning: yr.no's events, oldest first, each with a stable bolt", () => {
+  const strikes = M.parseLightning(fixture("yr-lightning.json"))
+  assert.equal(strikes.length, 40)
+  assert.deepEqual([strikes[0].ms, strikes[0].lon, strikes[0].lat], [1785943095000, 11.4935, 58.1638])
+  assert.ok(strikes.every((s, i) => i === 0 || strikes[i - 1].ms <= s.ms))
+  assert.deepEqual(M.parseLightning(fixture("yr-lightning.json"))[5].shape, strikes[5].shape)
+  // No strikes is a valid answer; anything else unreadable is not.
+  assert.deepEqual(M.parseLightning('{"historicalData":"[]","status":{"code":"Ok"}}'), [])
+  assert.equal(M.parseLightning("<html>"), null)
+  assert.equal(M.parseLightning('{"historicalData":"oops"}'), null)
+  // Extra fields per event are ignored; broken events are skipped.
+  assert.equal(M.parseLightning('{"historicalData":"[[1,2,3,4,5],[\\"x\\",2,3]]"}').length, 1)
+})
+
+test("lightning bolt: ends at the strike, above it, sometimes forked", () => {
+  let forked = 0
+  for (let seed = 1; seed <= 400; seed++) {
+    const b = M.lightningShape(seed * 7919)
+    assert.deepEqual(b.main[b.main.length - 1], [0, 0])
+    assert.equal(b.main.length, 9)
+    const top = b.main[0]
+    assert.ok(top[1] <= -13 && top[1] >= -22 && Math.abs(top[0]) <= 4)
+    assert.ok(b.branches.length <= 2)
+    for (const branch of b.branches) assert.ok(b.main.some((p) => p[0] === branch[0][0] && p[1] === branch[0][1]))
+    if (b.branches.length) forked++
+  }
+  assert.ok(forked > 120 && forked < 280, String(forked))
+})
+
+test("lightning moment: frame time, then the latest data, none ahead", () => {
+  const now = 1000 * 60000
+  assert.equal(M.lightningMoment(now - 5 * 60000, now, now + 3 * 60000), now - 5 * 60000)
+  assert.equal(M.lightningMoment(now, now, now + 3 * 60000), now + 3 * 60000)
+  assert.equal(M.lightningMoment(now, now, 0), now)
+  assert.equal(M.lightningMoment(now + 5 * 60000, now, now + 3 * 60000), null)
+})
+
+test("lightning points: in view pixels, like the location marker", () => {
+  const view = M.mapView(2, 57.93, 12.53, W, H)
+  const strikes = [{ ms: 2, lat: 57.93, lon: 12.53, shape: null }, { ms: 1, lat: 40, lon: 12.53, shape: null }]
+  const points = M.lightningPoints(strikes, view, W, H, 30)
+  assert.equal(points.length, 1)
+  assert.ok(Math.abs(points[0].x - view.markerX) < 1e-9 && Math.abs(points[0].y - view.markerY) < 1e-9)
+  assert.deepEqual(M.lightningPoints(strikes, null, W, H, 30), [])
+})
+
+test("radar coverage: the latest observation, or the newest assembled frame", () => {
+  const frames = [0, 1, 2, 3, 4].map((t) => ({ timeMs: t }))
+  assert.equal(M.radarCoverageIndex({ frames, nowIndex: 3 }), 3)
+  assert.equal(M.radarCoverageIndex({ frames, nowIndex: 3, ready: 2 }), 1)
+  assert.equal(M.radarCoverageIndex({ frames, nowIndex: 3, ready: 4 }), 3)
+  assert.equal(M.radarCoverageIndex({ frames, nowIndex: -1 }), 0)
+})
+
+test("lightning bolts: new and after-image, thinned newest first", () => {
+  const m = 100 * 60000
+  const at = (x, y, minutesAgo) => ({ x, y, ms: m - minutesAgo * 60000 })
+  const points = [at(0, 0, 12), at(50, 50, 7), at(55, 55, 6), at(0, 0, 2), at(5, 5, 1), at(100, 0, 0), at(0, 0, -1)]
+  const bolts = M.lightningBolts(points, m)
+  // Newest first: (100,0), (5,5); (0,0) at 2 min is within 10 px of (5,5).
+  assert.deepEqual(bolts.fresh.map((p) => [p.x, p.y]), [[100, 0], [5, 5]])
+  // 5–10 min: (55,55) then (50,50), which is too close to it. 12 min: none.
+  assert.deepEqual(bolts.after.map((p) => [p.x, p.y]), [[55, 55]])
+  assert.deepEqual(M.lightningBolts([], m), { fresh: [], after: [] })
+})

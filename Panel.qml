@@ -1261,6 +1261,97 @@ Panel {
             fragmentShader: Qt.resolvedUrl("shaders/radar.frag.qsb")
           }
 
+          // Lightning (yr.no): strikes from the shown moment's own 5 minutes
+          // get a bolt that flares as it appears, those from the 5 minutes
+          // before a dimmer one (Model.lightningBolts). Under them, each
+          // strike leaves a small dot that fades over
+          // Model.LIGHTNING_TRAIL_MS. Dots and dim bolts are drawn once per
+          // frame; only the few new bolts are redrawn while they flare.
+          Item {
+            id: lightning
+            anchors.fill: parent
+            readonly property var points: root.yrRadarActive && root.mapViewState && root.service
+              ? Model.lightningPoints(root.service.lightningStrikes, root.mapViewState, width, height, 30) : []
+            readonly property double frameMs: root.yrCurrentFrame ? root.yrCurrentFrame.timeMs : 0
+            // The time strikes are shown for; null on forecast frames.
+            readonly property var moment: root.service && frameMs && points.length
+              ? Model.lightningMoment(frameMs, root.service.yrNowMs, root.service.lightningDataMs) : null
+            readonly property var bolts: moment !== null ? Model.lightningBolts(points, moment) : ({ fresh: [], after: [] })
+            readonly property color glow: "#ffdf8f"
+            readonly property color core: "#fffdf7"
+            readonly property color edge: "#0b0d14"
+            // 0 → 1 while new bolts flare; 1 at rest.
+            property real flash: 1
+            onBoltsChanged: {
+              if (bolts.fresh.length) flashAnim.restart()
+              else { flashAnim.stop(); flash = 1 }
+              trail.requestPaint()
+              flashes.requestPaint()
+            }
+            onFlashChanged: flashes.requestPaint()
+            NumberAnimation { id: flashAnim; target: lightning; property: "flash"; from: 0; to: 1; duration: 220 }
+
+            function traceLine(ctx, p, pts) {
+              ctx.moveTo(p.x + pts[0][0], p.y + pts[0][1])
+              for (var i = 1; i < pts.length; i++) ctx.lineTo(p.x + pts[i][0], p.y + pts[i][1])
+            }
+            function strokeBolt(ctx, p, color, width, alpha) {
+              ctx.globalAlpha = alpha
+              ctx.strokeStyle = String(color)
+              ctx.lineWidth = width
+              ctx.beginPath()
+              traceLine(ctx, p, p.shape.main)
+              for (var b = 0; b < p.shape.branches.length; b++) traceLine(ctx, p, p.shape.branches[b])
+              ctx.stroke()
+            }
+            // A dark edge first, so the bolt stands out on blue rain.
+            function drawBolt(ctx, p, alpha, flare) {
+              strokeBolt(ctx, p, edge, 4, alpha * 0.55)
+              strokeBolt(ctx, p, glow, 2.6 + 3 * flare, alpha * (0.45 + 0.4 * flare))
+              strokeBolt(ctx, p, core, 1.2, alpha)
+            }
+
+            Canvas {
+              id: trail
+              anchors.fill: parent
+              onPaint: {
+                var ctx = getContext("2d")
+                ctx.reset()
+                var moment = lightning.moment
+                if (moment === null) return
+                ctx.lineJoin = "round"
+                ctx.lineCap = "round"
+                ctx.fillStyle = String(lightning.glow)
+                var points = lightning.points
+                for (var i = 0; i < points.length; i++) {
+                  var age = moment - points[i].ms
+                  if (age < 0 || age >= Model.LIGHTNING_TRAIL_MS) continue
+                  ctx.globalAlpha = 0.6 * (1 - age / Model.LIGHTNING_TRAIL_MS)
+                  ctx.beginPath()
+                  ctx.arc(points[i].x, points[i].y, 1.6, 0, 2 * Math.PI)
+                  ctx.fill()
+                }
+                var after = lightning.bolts.after
+                for (var j = 0; j < after.length; j++) lightning.drawBolt(ctx, after[j], 0.35, 0)
+                ctx.globalAlpha = 1
+              }
+            }
+            Canvas {
+              id: flashes
+              anchors.fill: parent
+              onPaint: {
+                var ctx = getContext("2d")
+                ctx.reset()
+                var fresh = lightning.bolts.fresh
+                if (!fresh.length) return
+                ctx.lineJoin = "round"
+                ctx.lineCap = "round"
+                for (var i = 0; i < fresh.length; i++) lightning.drawBolt(ctx, fresh[i], 1, 1 - lightning.flash)
+                ctx.globalAlpha = 1
+              }
+            }
+          }
+
           // Nearby cities and towns (map/places.json), picked per zoom level.
           Repeater {
             model: ScriptModel { values: root.mapLabels; objectProp: "key" }

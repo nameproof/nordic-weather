@@ -105,6 +105,19 @@ Item {
       compare(buffers.staging, null)
     }
 
+    // A loop still being assembled takes coverage from its newest assembled
+    // frame until its latest observation is there, then switches to it.
+    function test_coverage_while_assembling() {
+      var partial = { key: "p|2", base: "p", viewKey: "test", nowIndex: 3, ready: 2,
+                      frames: [0, 1, 2, 3, 4].map(function(t) { return { timeMs: t } }) }
+      var buffers = makeImages(partial)
+      tryCompare(buffers, "ready", true)
+      tryVerify(function() { return String(buffers.coverage.source).endsWith("f_1_test.png") })
+      buffers.loop = Object.assign({}, partial, { key: "p", ready: 5 })
+      tryVerify(function() { return String(buffers.coverage.source).endsWith("f_3_test.png") })
+      tryCompare(buffers.coverage, "status", Image.Ready)
+    }
+
     function test_single_preview_and_unload() {
       var buffers = makeImages(loop("preview", [4]))
       tryCompare(buffers, "ready", true)

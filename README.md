@@ -24,9 +24,10 @@ the data behind yr.no.
   without radar are dimmed. Zoom with + / − or the mouse wheel; click the
   map to pause. A ruler along the bottom shows where the loop is, with
   −1 h / Nu / +1 h marked under the map; drag it to scrub, hover it for the
-  exact time. The base map ships with the plugin (see below); only the
-  radar tiles come from yr.no's undocumented tile server, so that part may
-  break if yr.no changes it.
+  exact time. Lightning strikes flash up as bolts in the frame they happen
+  in and leave a dot for ten minutes. The base map ships with the plugin
+  (see below); the radar tiles and lightning come from yr.no's
+  undocumented backend, so those parts may break if yr.no changes it.
 
   Nothing is downloaded or drawn until the side panel is open.
 - **Location:** click the place name and search. The location is saved in the

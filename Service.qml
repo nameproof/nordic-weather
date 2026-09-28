@@ -191,8 +191,13 @@ Scope {
 
   // ---------------------------------------------------------------- fetching
 
+  // Cached responses; lightning lives in memory (see lightningEntry).
+  function entryFor(kind) {
+    return kind === "lightning" ? lightningEntry : cache[kind]
+  }
+
   function isDue(kind, url, now) {
-    var entry = cache[kind]
+    var entry = entryFor(kind)
     var failure = failures[kind]
     if (failure && failure.key === url && now < failure.nextMs) return false
     if (!entry || entry.key !== url) return true
@@ -205,9 +210,11 @@ Scope {
     // request on every tick.
     if (kind === "nowcast")
       return now >= Math.max(entry.expiresMs, entry.fetchedMs + (anyOpen ? 2 * 60000 : Model.NOWCAST_BACKGROUND_MS))
-    // Radar indexes: only polled while the radar is on screen.
+    // Radar indexes and lightning: only polled while the radar is on screen.
     if (kind === "yrObs" || kind === "yrNow")
       return now >= Math.max(entry.expiresMs, entry.fetchedMs + 2 * 60000)
+    if (kind === "lightning")
+      return now >= Math.max(entry.expiresMs, entry.fetchedMs + 60000)
     return now >= Math.max(entry.expiresMs + refreshJitterMs, entry.fetchedMs + 5 * 60000)
   }
 
@@ -227,13 +234,14 @@ Scope {
     if (yrRadarActive) {
       startFetch(yrObsProc, "yrObs", Model.YR_RADAR_OBS_INDEX, force || isDue("yrObs", Model.YR_RADAR_OBS_INDEX, now))
       startFetch(yrNowProc, "yrNow", Model.YR_RADAR_NOWCAST_INDEX, force || isDue("yrNow", Model.YR_RADAR_NOWCAST_INDEX, now))
+      startFetch(lightningProc, "lightning", Model.YR_LIGHTNING_URL, force || isDue("lightning", Model.YR_LIGHTNING_URL, now))
       maybeDownloadYrTiles()
     }
   }
 
   function startFetch(proc, kind, url, due) {
     if (!due || proc.running) return
-    var entry = cache[kind]
+    var entry = entryFor(kind)
     var lastModified = entry && entry.key === url ? entry.lastModified : ""
     proc.url = url
     proc.command = Model.curlCommand(url, lastModified, kind === "forecast" ? 15 : 10)
@@ -269,13 +277,16 @@ Scope {
     if (response.status === 200 || response.status === 203 || response.status === 304) {
       var unreadable = response.status !== 304 && (
         ((kind === "forecast" || kind === "nowcast") && !Model.parseTimeseries(response.body))
-        || ((kind === "yrObs" || kind === "yrNow") && !Model.parseTileIndex(response.body).length))
+        || ((kind === "yrObs" || kind === "yrNow") && !Model.parseTileIndex(response.body).length)
+        || (kind === "lightning" && !Model.parseLightning(response.body)))
       if (unreadable) {
         recordFailure(kind, url, "unreadable response")
       } else {
-        var fallbackTtl = kind === "yrObs" || kind === "yrNow" ? 60000
+        var fallbackTtl = kind === "yrObs" || kind === "yrNow" || kind === "lightning" ? 60000
           : kind === "nowcast" ? 5 * 60000 : kind === "forecast" ? 30 * 60000 : 24 * 3600000
-        setCacheEntry(kind, Model.cacheEntryFromResponse(cache[kind], url, response, now, fallbackTtl))
+        var entry = Model.cacheEntryFromResponse(entryFor(kind), url, response, now, fallbackTtl)
+        if (kind === "lightning") lightningEntry = entry
+        else setCacheEntry(kind, entry)
         var cleared = Object.assign({}, failures)
         delete cleared[kind]
         failures = cleared
@@ -437,6 +448,16 @@ Scope {
       try { root.mapPlaces = JSON.parse(text()) } catch (e) { root.mapPlaces = null }
     }
   }
+
+  // Lightning strikes (yr.no, polled while the radar is open). Kept in
+  // memory only: it is short-lived, and the cache file is rewritten on
+  // every change.
+  property var lightningEntry: null
+  readonly property var lightningStrikes: lightningEntry ? (Model.parseLightning(lightningEntry.body) || []) : []
+  readonly property double lightningDataMs: lightningEntry ? lightningEntry.fetchedMs : 0
+  // The newest radar observation's time: "now" on the map.
+  readonly property double yrNowMs: yrDisplay.frames.length && yrDisplay.nowIndex >= 0
+    ? yrDisplay.frames[yrDisplay.nowIndex].timeMs : 0
 
   readonly property var yrRadar: Model.radarFrames(cache.yrObs ? cache.yrObs.body : "", cache.yrNow ? cache.yrNow.body : "")
   // The map's real pixel size, from the panel showing it.
@@ -736,6 +757,7 @@ Scope {
   FetchProcess { id: moonProc; kind: "moon" }
   FetchProcess { id: yrObsProc; kind: "yrObs" }
   FetchProcess { id: yrNowProc; kind: "yrNow" }
+  FetchProcess { id: lightningProc; kind: "lightning" }
 
   // Both scripts print two numbers (see Model.tileDownloadCommand and
   // Model.frameComposeCommand). The next step starts once the process has

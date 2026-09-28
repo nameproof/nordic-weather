@@ -26,7 +26,8 @@ Item {
     && front.playhead.frame === playhead.frame && front.playhead.tick === playhead.tick
   readonly property var current: front ? front.current : null
   readonly property var upcoming: front ? front.upcoming : null
-  // No-coverage for the whole loop: its latest observation, once decoded.
+  // No-coverage for the whole loop: its latest observation
+  // (Model.radarCoverageIndex), once decoded.
   readonly property var coverage: front && front.coverage.status === Image.Ready ? front.coverage : current
 
   signal prepared(string token, bool ready)
@@ -115,7 +116,7 @@ Item {
       FrameImage {
         id: coverageImage
         slot: -1
-        source: imageSet.urlFor(imageSet.loop.frames[Math.max(0, imageSet.loop.nowIndex)] || null)
+        source: imageSet.urlFor(imageSet.loop.frames[Model.radarCoverageIndex(imageSet.loop)] || null)
       }
     }
   }

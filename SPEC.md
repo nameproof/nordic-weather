@@ -117,6 +117,7 @@ headers and body are captured so `Expires` and `Last-Modified` can be read.
 | Moon | `api.met.no/weatherapi/sunrise/3.0/moon?lat&lon&date&offset` | Once per local date (gives `moonphase` in degrees) |
 | yr.no radar indexes | `tiles.yr.no/api/precipitation-observations/available.json`, `…/precipitation-nowcast/available.json` | Only while the radar side panel is open; at most every 2 min. Undocumented yr.no backend. |
 | yr.no radar tiles | from the indexes (z5–6; z7 view uses z6 scaled) | Per new frame and zoom, 12 at a time over one HTTP/2 connection, only missing files, pruned after 2 h. A batch counts as done only when all its tiles are on disk; otherwise it is retried after 5 s, doubling up to 60 s. |
+| yr.no lightning | `www.yr.no/api/v0/lightning-events?fromHours=2` | Only while the radar side panel is open; at most every minute (yr.no caches it for 30 s). Kept in memory, not in the cache file. Undocumented yr.no backend. |
 | Base map | none: `map/tiles/{z}/{x}/{y}.png` and `map/places.json` ship with the plugin | Built from OpenStreetMap by `scripts/build-basemap.py`. |
 | Radar frames | none: assembled locally | Once a view's radar tiles are downloaded, ImageMagick (in Omarchy's base packages) assembles each frame into one map-sized PNG (`f_*.png`, pruned after 2 h). A frame with a tile missing is never written; the loop is only swapped in when every frame exists. Playback then decodes one image per frame instead of 20–25 tiles (≈3× less CPU). |
 | Place search | `geocoding-api.open-meteo.com/v1/search?name&count=6&language=sv\|en` | Typing in the search field, debounced 300 ms, one request in flight |
@@ -375,7 +376,9 @@ coverage). Views never leave that box (`Model.mapView`):
 On steps 1–3 the view centres on the location but is shifted to stay in
 the coverage box, so the marker can sit off-centre. Parts of the box
 without radar (open sea) are dimmed and hatched by the radar shader, from
-one image for the whole loop: its latest observation. yr.no's frames
+one image for the whole loop: its latest observation (while the loop is
+still being assembled and that frame isn't yet, the newest one that is;
+`Model.radarCoverageIndex`). yr.no's frames
 disagree on coverage (a radar missing from one observation, forecast
 frames filling the gaps as they run ahead), so taken per frame the
 hatching would change shape through the loop.
@@ -406,6 +409,32 @@ loop is replaced; the previous set stays on screen until the new frames
 are decoded. Images skip Qt's decoded-image cache and are sampled directly
 by the radar shader, without offscreen layers. ImageMagick assembles
 frames in four processes of one thread each.
+
+### Lightning
+
+Strikes come from yr.no's lightning map: `{ historicalData }`, a JSON
+string holding `[time (s), lon, lat, …]` per strike, the last 2 hours of
+the Nordics (both cloud-to-ground and cloud-to-cloud). They are drawn on a
+canvas over the radar, placed like the location marker:
+
+- Each strike gets its own bolt (`Model.lightningShape`, seeded by the
+  strike so it keeps its shape): a jagged channel 13–22 px tall ending at
+  the strike, forking once or twice about half the time. It has a dark
+  edge (to stand out on rain), a pale gold glow and a near-white core.
+- At a past frame, strikes up to that frame's time are shown. At "now",
+  strikes up to the latest lightning data, which runs a few minutes ahead
+  of the radar. Forecast frames show no lightning: strikes can't be
+  forecast, and a held trail would sit on the map for the whole forecast.
+- A bolt shows for strikes in the moment's own 5 minutes (its glow flares
+  briefly as the frame appears) and dimmer for the 5 minutes before. A
+  bolt within 10 px of a newer one is left out, so a dense cell reads as
+  separate bolts.
+- Every strike leaves a small dot that fades out over 10 minutes.
+- Which bolts to draw is worked out once per frame
+  (`Model.lightningBolts`). Dots and dim bolts are painted once per frame;
+  a second canvas holds only the new bolts and is the only one repainted
+  while they flare. With no new bolts nothing animates, so a loop without
+  lightning costs nothing extra.
 
 ## Testing
 
