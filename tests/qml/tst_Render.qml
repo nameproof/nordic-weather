@@ -7,6 +7,7 @@ Rectangle {
   height: 64
   Image { id: a; visible: false; source: "a.png" }
   Image { id: c; visible: false; source: "c.png" }
+  Image { id: tones; visible: false; source: "tones.png" }
   ShaderEffect {
     id: shader
     width: 64
@@ -19,6 +20,7 @@ Rectangle {
     property real lineSpacing: 4
     property real lineWidth: 1
     property color lineColor: "white"
+    property real darkMap: 0
     fragmentShader: "radar.qsb"
   }
   TestCase {
@@ -51,6 +53,28 @@ Rectangle {
       compare(right, 0)
       shader.lineStrength = 0
       shader.lineWidth = 1
+      shader.coverageMap = a
+    }
+
+    // yr.no's lightest rain (#91e4ff, left) and deepest blue (#0055ff,
+    // right): unchanged on a light map; on a dark one the light rain turns
+    // dim and see-through while the heavy rain comes out brightest.
+    function test_dark_map_tones_rain() {
+      tryCompare(tones, "status", Image.Ready)
+      shader.source = tones
+      shader.coverageMap = tones
+      var light = pixels()
+      compare(light.red(16, 32), 0x91)
+      compare(light.green(16, 32), 0xe4)
+      compare(light.green(48, 32), 0x55)
+      shader.darkMap = 1
+      var dark = pixels()
+      verify(dark.green(16, 32) < 70, "light rain dimmed: " + dark.green(16, 32))
+      verify(dark.blue(16, 32) < 110, "light rain dimmed: " + dark.blue(16, 32))
+      verify(dark.green(48, 32) > 150, "heavy rain brightened: " + dark.green(48, 32))
+      verify(dark.blue(48, 32) > dark.blue(16, 32) + 100, "heavy rain above light rain")
+      shader.darkMap = 0
+      shader.source = a
       shader.coverageMap = a
     }
   }

@@ -162,7 +162,9 @@ Rules:
 ### Search UI (same behavior as the built-in)
 
 1. Click the place name in the hero, or press Enter while the panel is
-   focused, or call the `edit` IPC. The name is replaced by a text field.
+   focused, or call the `edit` IPC. The name is replaced by an empty text
+   field. While it is empty the list shows the favourites (below), with
+   the first one that isn't the current place selected.
 2. Suggestions start 300 ms after the last keystroke. Each row shows the name
    in bold, with `admin1, country` dimmed after it.
 3. ↑/↓ moves the selection, Enter picks the selected row (the first row by
@@ -171,6 +173,25 @@ Rules:
    turns into a spinner and the field stays open.
 5. If the search returns nothing, show a "No places found" / "Inga platser
    hittades" row.
+
+### Favourites
+
+- **Adding and removing:** a star at the end of each search result: ☆ adds
+  that place, ★ (accent) removes it, without switching to it. At most 8
+  (`FAVORITES_MAX`); with a full list the ☆ is dimmed and does nothing.
+- **Picking:** with the search field empty, the list shows the favourites
+  (★ before each name, `admin1, country` after it). The current place is
+  dimmed; picking it just closes the search. ↑/↓ and Enter work as for
+  search results; Delete, or the ✕ that appears on hover, removes one.
+- **From a keybind:** `omarchy-shell omarchy.weather favorite next` (or
+  `previous`) switches to the next favourite, wrapping; from a place that
+  isn't a favourite, to the first one.
+- **Storage:** `~/.local/state/omarchy/settings/nordic-weather-favorites.json`,
+  this plugin's own (the built-in has no favourites): a list of
+  `{ name, description, latitude, longitude, elevation }` in the order
+  added, the same shape as a search result, so switching needs no search.
+  A place is identified by its coordinates (rounded to 4 decimals). The
+  file is watched, so hand edits apply at once.
 
 ## Language
 
@@ -245,7 +266,7 @@ returns a single object. QML only binds to it and never touches raw API JSON.
     { day: "Mån", icon: "", min: 12, max: 18, precip: "0 mm", precipProbability: 10 }
   ],
   sun:  { rise: "07:02", set: "18:57" },
-  moon: { phaseDeg: 171, phaseName: "Fullmåne", high: "högst 01:08 (37°)" },   // high_moon: time, elevation
+  moon: { phaseDeg: 171, phaseName: "Fullmåne", high: "högst 01:08" },   // high_moon time
   attribution: "♥ MET Norway"
 }
 ```
@@ -305,7 +326,7 @@ gets taller than the screen allows.
 ┌──────────────────────────────────────────────────────────────┐
 │                                           ⌖ ALINGSÅS          │
 │      16°C            KÄNNS   VIND        FUKT   TRYCK         │
-│                      16°     6 m/s V ↗   55%    1016 hPa ↘    │
+│                      16°     6 m/s ↗     55%    1016 hPa ↘    │
 │   Klart                      (byar 12)          (−1,4 på 3 h) │
 ├──────────────────────────────────────────────────────────────┤
 │  ☂ Uppehåll kommande 2 timmar          ▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁  │
@@ -326,7 +347,7 @@ gets taller than the screen allows.
 │  Tor     12° ██████████ 21°    0 mm                          │
 │  …                                                             │
 ├──────────────────────────────────────────────────────────────┤
-│  07:02 18:57            Fullmåne 99%   högst 01:08 (37°)  │
+│  07:02 18:57                  Fullmåne 99%   högst 01:08  │
 └──────────────────────────────────────────────────────────────┘
 ```
 
@@ -382,6 +403,16 @@ still being assembled and that frame isn't yet, the newest one that is;
 disagree on coverage (a radar missing from one observation, forecast
 frames filling the gaps as they run ahead), so taken per frame the
 hatching would change shape through the loop.
+
+Rain keeps yr.no's colours on light themes. yr.no's palette is made for a
+light map (light rain pale cyan `#91e4ff`, heavy rain deep blue `#0055ff`,
+extreme rain purple), so on a dark map the lightest rain would stand out
+most. There the blues are redrawn as a ramp that brightens with intensity:
+light rain a dim steel blue, partly see-through, rising to bright sky blue
+for heavy rain; purples are kept. The shader reads intensity from the
+colour (blue stays full while green falls). How much applies follows how
+dark the theme's map is (`Panel.mapDarkness`: none at luma ≥ 0.45, fully
+at ≤ 0.15), so in-between themes get part of it.
 
 The base map is rendered by `scripts/build-basemap.py` from OpenStreetMap
 extracts (`scripts/basemap-regions.txt`) for the coverage box and the

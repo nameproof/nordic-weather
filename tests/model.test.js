@@ -139,7 +139,7 @@ test("moon phase glyphs (footer only)", () => {
 })
 
 test("moon illumination", () => {
-  const at = (deg) => M.buildView({ moon: { phaseDeg: deg, refMs: NOW, highMs: NaN, highElevation: NaN },
+  const at = (deg) => M.buildView({ moon: { phaseDeg: deg, refMs: NOW, highMs: NaN },
                                     lang: "sv", nowMs: NOW }).moon.illumination
   assert.equal(at(0), 0)
   assert.equal(at(90), 50)
@@ -327,10 +327,10 @@ test("sun and moon", () => {
                              lang: "sv", nowMs: NOW, settings: {} })
   assert.deepEqual(view.sun, { rise: "07:03", set: "18:58" })
   assert.equal(view.moon.name, "Fullmåne")  // 171°, within ±22.5° of full
-  assert.equal(view.moon.high, "högst 01:08 (37°)")
+  assert.equal(view.moon.high, "högst 01:08")
   const noHigh = Object.assign({}, moon, { highMs: NaN })
   assert.equal(M.buildView({ moon: noHigh, lang: "en", nowMs: NOW }).moon.high, "")
-  assert.equal(M.buildView({ moon, lang: "en", nowMs: NOW }).moon.high, "highest 01:08 (37°)")
+  assert.equal(M.buildView({ moon, lang: "en", nowMs: NOW }).moon.high, "highest 01:08")
   assert.equal(view.moon.illumination, 99)  // 171°
 })
 
@@ -763,4 +763,49 @@ test("lightning bolts: new and after-image, thinned newest first", () => {
   // 5–10 min: (55,55) then (50,50), which is too close to it. 12 min: none.
   assert.deepEqual(bolts.after.map((p) => [p.x, p.y]), [[55, 55]])
   assert.deepEqual(M.lightningBolts([], m), { fresh: [], after: [] })
+})
+
+test("favourites: parsed, keyed by coordinates, capped", () => {
+  const text = JSON.stringify([
+    { name: "Alingsås", description: "Västra Götaland, Sverige", latitude: 57.93033, longitude: 12.53345, elevation: 58 },
+    { name: "Alingsås again", latitude: 57.93034, longitude: 12.53346 },  // same place, rounded
+    { name: "", latitude: 1, longitude: 2 },
+    { name: "Nowhere" },
+    { name: " Göteborg ", latitude: "57.70716", longitude: "11.96679" }
+  ])
+  const favs = M.parseFavorites(text)
+  assert.deepEqual(favs.map((f) => f.name), ["Alingsås", "Göteborg"])
+  assert.deepEqual(favs[1], { name: "Göteborg", description: "", latitude: 57.70716, longitude: 11.96679, elevation: null })
+  assert.deepEqual(M.parseFavorites("oops"), [])
+  const many = Array.from({ length: 12 }, (_, i) => ({ name: "P" + i, latitude: 60 + i, longitude: 10 }))
+  assert.equal(M.parseFavorites(JSON.stringify(many)).length, M.FAVORITES_MAX)
+})
+
+test("favourites: toggle, remove, rows and stepping", () => {
+  const a = { name: "Alingsås", latitude: 57.9303, longitude: 12.5335 }
+  const g = { name: "Göteborg", description: "Västra Götaland, Sverige", latitude: 57.7072, longitude: 11.9668, elevation: 12 }
+  const b = { name: "Borås", latitude: 57.721, longitude: 12.9401 }
+  let favs = M.toggleFavorite([], a)
+  favs = M.toggleFavorite(favs, g)
+  assert.deepEqual(favs.map((f) => f.name), ["Alingsås", "Göteborg"])
+  assert.equal(favs[1].elevation, 12)
+  assert.ok(M.isFavorite(favs, { name: "renamed", latitude: 57.93031, longitude: 12.53349 }))
+  assert.deepEqual(M.toggleFavorite(favs, a).map((f) => f.name), ["Göteborg"])
+  assert.deepEqual(M.removeFavorite(favs, M.placeKey(g)).map((f) => f.name), ["Alingsås"])
+  assert.deepEqual(M.toggleFavorite(favs, { name: "No place" }), favs)
+  const full = Array.from({ length: M.FAVORITES_MAX }, (_, i) => ({ name: "P" + i, latitude: 60 + i, longitude: 10 }))
+  assert.equal(M.toggleFavorite(full, a), full)
+  // Rows: the current place marked.
+  const rows = M.favoriteRows(favs, a)
+  assert.deepEqual(rows.map((r) => r.current), [true, false])
+  assert.equal(rows[1].placeKey, M.placeKey(g))
+  assert.notEqual(rows[0].key, rows[1].key)
+  // Stepping wraps; from a place that isn't a favourite, the first one.
+  const three = favs.concat([b])
+  assert.equal(M.stepFavorite(three, a, 1).name, "Göteborg")
+  assert.equal(M.stepFavorite(three, a, -1).name, "Borås")
+  assert.equal(M.stepFavorite(three, b, 1).name, "Alingsås")
+  assert.equal(M.stepFavorite(three, { name: "X", latitude: 1, longitude: 1 }, 1).name, "Alingsås")
+  assert.equal(M.stepFavorite([a], a, 1), null)
+  assert.equal(M.stepFavorite([], a, 1), null)
 })

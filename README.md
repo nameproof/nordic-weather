@@ -15,14 +15,15 @@ the data behind yr.no.
   - Hourly rows for three days, showing forecast uncertainty (`12°±2`,
     `0–0,3 mm`).
   - A 10-day overview with temperature bars.
-  - Sunrise and sunset, moon phase, and when the moon is highest and how
-    high.
+  - Sunrise and sunset, moon phase, and when the moon is highest.
 - **Radar map:** a side panel with a map in your theme's colours and
   yr.no's radar every 5 minutes for the last 1½ hours plus a 2-hour
   forecast. Zoomed out it shows the whole Nordic radar area; zoomed in it
   follows your location but never leaves the radar's coverage, and areas
-  without radar are dimmed. Zoom with + / − or the mouse wheel; click the
-  map to pause. A ruler along the bottom shows where the loop is, with
+  without radar are dimmed. On dark themes the rain is redrawn so heavier
+  rain is brighter, rather than light rain standing out most. Zoom with
+  + / − or the mouse wheel; click the map to pause. A ruler along the
+  bottom shows where the loop is, with
   −1 h / Nu / +1 h marked under the map; drag it to scrub, hover it for the
   exact time. Lightning strikes flash up as bolts in the frame they happen
   in and leave a dot for ten minutes. The base map ships with the plugin
@@ -32,6 +33,8 @@ the data behind yr.no.
   Nothing is downloaded or drawn until the side panel is open.
 - **Location:** click the place name and search. The location is saved in the
   same file the built-in widget uses, so switching between the two keeps it.
+  The star on a search result saves that place as a favourite; with the
+  search field empty, your favourites are listed for a one-click switch.
 - **Language:** Swedish when the system locale is Swedish, English otherwise.
 
 Enabling the plugin puts it in the built-in widget's place in the bar.
@@ -50,9 +53,11 @@ omarchy plugin add https://github.com/nameproof/omarchy-nordic-weather.git --ena
 | Left click | Open or close the panel |
 | Right click | Notification with current weather |
 | Middle click, or `r` in the panel | Refresh now |
-| Click the place name, or Enter in the panel | Search for a location |
+| Click the place name, or Enter in the panel | Search for a location, or pick a favourite |
+| Click the ☆ / ★ on a search result | Add or remove that place as a favourite |
 | Click **Radar ›**, or → / `l` in the panel (← / `h` closes) | Show the radar map beside the forecast |
 | `omarchy-shell omarchy.weather toggle` / `edit` / `refresh` / `radar` | The same, from a keybind |
+| `omarchy-shell omarchy.weather favorite next` / `favorite previous` | Switch to the next or previous favourite |
 
 Settings live on the widget's entry in `~/.config/omarchy/shell.json`:
 

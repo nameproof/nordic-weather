@@ -16,6 +16,7 @@ test("Qt RHI: radar rain and no-coverage pixels", {
     fs.copyFileSync(path.join(__dirname, "..", "shaders", "radar.frag.qsb"), path.join(dir, "radar.qsb"))
     execFileSync("magick", ["-size", "64x64", "xc:black", "-fill", "blue", "-draw", "rectangle 16,16 31,47", path.join(dir, "a.png")])
     execFileSync("magick", ["-size", "64x64", "xc:black", "-fill", "white", "-draw", "rectangle 0,0 31,63", path.join(dir, "c.png")])
+    execFileSync("magick", ["-size", "64x64", "xc:#91e4ff", "-fill", "#0055ff", "-draw", "rectangle 32,0 63,63", path.join(dir, "tones.png")])
     const runtime = path.join(dir, "runtime")
     fs.mkdirSync(runtime, { mode: 0o700 })
     const result = spawnSync("/usr/lib/qt6/bin/qmltestrunner", ["-input", dir, "-nocrashhandler"], {

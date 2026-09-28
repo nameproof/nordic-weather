@@ -188,15 +188,28 @@ Panel {
   readonly property bool savingLocation: service ? service.savingLocation : false
   readonly property var locationSuggestions: service ? service.locationSuggestions : []
   readonly property bool geocodeSearched: service ? service.geocodeSearched : false
-  onLocationSuggestionsChanged: suggestionIndex = 0
+  onLocationSuggestionsChanged: if (!showingFavorites) suggestionIndex = 0
+  // With the field empty the dropdown lists the favourites instead.
+  property string searchText: ""
+  readonly property var favorites: service ? service.favorites : []
+  readonly property bool showingFavorites: searchText.trim() === ""
+  readonly property var dropdownRows: showingFavorites ? Model.favoriteRows(favorites, location) : locationSuggestions
+  onShowingFavoritesChanged: suggestionIndex = firstDropdownIndex()
+
+  // The first row to select: with favourites, the first that isn't the
+  // current place.
+  function firstDropdownIndex() {
+    if (!showingFavorites) return 0
+    for (var i = 0; i < dropdownRows.length; i++) if (!dropdownRows[i].current) return i
+    return 0
+  }
 
   function startEditingLocation() {
     editingLocation = true
-    suggestionIndex = 0
     if (service) service.clearSearch()
     Qt.callLater(function() {
-      locationField.text = root.location.name
-      locationField.selectAll()
+      locationField.text = ""
+      root.suggestionIndex = root.firstDropdownIndex()
       locationField.forceActiveFocus()
     })
   }
@@ -209,9 +222,10 @@ Panel {
   }
 
   function commitLocation() {
-    // An empty search is not a way to remove the location; it just cancels.
+    // Empty field: the selected favourite (the current place just closes);
+    // with none, it cancels. It is never a way to remove the location.
     if (locationField.text.trim() === "") {
-      if (hasLocation) cancelEditingLocation()
+      pickFavorite(dropdownRows[suggestionIndex])
       return
     }
     // Enter before the debounce fired: search now, pick on the next Enter.
@@ -225,6 +239,11 @@ Panel {
 
   function pickSuggestion(suggestion) {
     if (service) service.pickSuggestion(suggestion)
+  }
+
+  function pickFavorite(row) {
+    if (row && !row.current) pickSuggestion(row)
+    else if (hasLocation) cancelEditingLocation()
   }
 
   Timer {
@@ -256,6 +275,10 @@ Panel {
   readonly property real radarLineSpacing: 8
   readonly property real radarLineWidth: 0.6
   readonly property color radarLineColor: Qt.darker(fg, 2.0)
+  // How dark the map is: 0 for light themes (luma ≥ 0.45), 1 for dark ones
+  // (≤ 0.15). The radar shader recolours rain for dark maps this much.
+  readonly property real mapDarkness: Math.max(0, Math.min(1,
+    (0.45 - (0.299 * mapLand.r + 0.587 * mapLand.g + 0.114 * mapLand.b)) / 0.3))
 
   // Forecast column width; the radar side panel is added next to it.
   readonly property int forecastWidth: Style.space(540)
@@ -424,7 +447,7 @@ Panel {
               anchors.verticalCenter: parent.verticalCenter
               spacing: Style.space(12)
 
-              // Place name; click to search.
+              // Place name; click to search or pick a favourite.
               Row {
                 anchors.right: parent.right
                 visible: !root.editingLocation && root.hasLocation
@@ -463,14 +486,22 @@ Panel {
                   placeholderText: root.t.searchPlaceholder
                   foreground: root.fg
                   font.family: root.fontFamily
-                  onTextChanged: if (root.editingLocation && !root.savingLocation) geocodeDebounce.restart()
+                  onTextChanged: {
+                    root.searchText = text
+                    if (root.editingLocation && !root.savingLocation) geocodeDebounce.restart()
+                  }
                   Keys.onPressed: function(event) {
                     if (event.key === Qt.Key_Escape) {
                       if (root.hasLocation) root.cancelEditingLocation()
                       else root.close()
                       event.accepted = true
                     } else if (event.key === Qt.Key_Down) {
-                      if (root.suggestionIndex < root.locationSuggestions.length - 1) root.suggestionIndex++
+                      if (root.suggestionIndex < root.dropdownRows.length - 1) root.suggestionIndex++
+                      event.accepted = true
+                    } else if (event.key === Qt.Key_Delete && root.showingFavorites) {
+                      var row = root.dropdownRows[root.suggestionIndex]
+                      if (row && root.service) root.service.removeFavorite(row.placeKey)
+                      root.suggestionIndex = Math.max(0, Math.min(root.suggestionIndex, root.dropdownRows.length - 2))
                       event.accepted = true
                     } else if (event.key === Qt.Key_Up) {
                       if (root.suggestionIndex > 0) root.suggestionIndex--
@@ -522,7 +553,7 @@ Panel {
                   model: root.view.current ? [
                     { label: root.t.feels, value: root.view.current.feelsLike === null ? "—" : root.view.current.feelsLike + "°", sub: "" },
                     { label: root.t.wind, value: root.view.current.wind.speed === null ? "—"
-                        : root.view.current.wind.speed + " m/s " + root.view.current.wind.dirLabel + " " + root.view.current.wind.arrow,
+                        : root.view.current.wind.speed + " m/s " + root.view.current.wind.arrow,
                       sub: root.view.current.wind.gust === null ? "" : "(" + root.t.gust + " " + root.view.current.wind.gust + ")" },
                     { label: root.t.humidity, value: root.view.current.humidity === null ? "—" : root.view.current.humidity + "%", sub: "" },
                     { label: root.t.pressure, value: root.view.current.pressure === null ? "—"
@@ -564,23 +595,28 @@ Panel {
             }
           }
 
-          // ---- Search suggestions.
+          // ---- Favourites (empty field) or search suggestions.
           Column {
             visible: root.editingLocation && !root.savingLocation
-              && (root.locationSuggestions.length > 0 || root.geocodeSearched)
+              && (root.dropdownRows.length > 0 || (!root.showingFavorites && root.geocodeSearched))
             width: parent.width
             spacing: 0
 
             Repeater {
-              model: ScriptModel { values: root.locationSuggestions; objectProp: "key" }
+              model: ScriptModel { values: root.dropdownRows; objectProp: "key" }
 
               Rectangle {
+                id: dropdownRow
                 required property var modelData
                 required property int index
                 width: parent.width
                 height: suggestionRow.implicitHeight + Style.space(12)
                 radius: Style.cornerRadius
                 color: index === root.suggestionIndex ? Style.hoverFillFor(root.fg, Color.accent) : "transparent"
+
+                // Favourite rows: a star first; the current place dimmed.
+                readonly property bool favorite: modelData.placeKey !== undefined
+                readonly property bool current: favorite && modelData.current
 
                 Row {
                   id: suggestionRow
@@ -590,9 +626,18 @@ Panel {
                   spacing: Style.space(8)
 
                   Text {
+                    visible: dropdownRow.favorite
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: "\uf005"  // nf-fa-star
+                    color: dropdownRow.current ? root.faint : Color.accent
+                    font.family: root.fontFamily
+                    font.pixelSize: Style.font.bodySmall
+                  }
+                  Text {
                     textFormat: Text.PlainText
                     text: modelData.name
-                    color: index === root.suggestionIndex ? Style.hoverStateColor(root.fg, Color.accent) : root.fg
+                    color: dropdownRow.current ? root.dim
+                      : index === root.suggestionIndex ? Style.hoverStateColor(root.fg, Color.accent) : root.fg
                     font.family: root.fontFamily
                     font.pixelSize: Style.font.body
                   }
@@ -608,17 +653,67 @@ Panel {
                 }
 
                 MouseArea {
+                  id: rowArea
                   anchors.fill: parent
                   hoverEnabled: true
                   cursorShape: Qt.PointingHandCursor
                   onPositionChanged: root.suggestionIndex = index
-                  onClicked: root.pickSuggestion(modelData)
+                  onClicked: dropdownRow.favorite ? root.pickFavorite(dropdownRow.modelData) : root.pickSuggestion(dropdownRow.modelData)
+                }
+                // Remove a favourite (also Delete on the selected row). Its
+                // own MouseArea on top, so the click doesn't pick the row.
+                MouseArea {
+                  id: removeArea
+                  visible: dropdownRow.favorite && (rowArea.containsMouse || containsMouse)
+                  anchors.right: parent.right
+                  anchors.rightMargin: Style.space(8)
+                  anchors.verticalCenter: parent.verticalCenter
+                  width: Style.space(24)
+                  height: parent.height
+                  hoverEnabled: true
+                  cursorShape: Qt.PointingHandCursor
+                  onClicked: root.service.removeFavorite(dropdownRow.modelData.placeKey)
+
+                  Text {
+                    anchors.centerIn: parent
+                    text: "\uf00d"  // nf-fa-times
+                    color: removeArea.containsMouse ? root.fg : root.dim
+                    font.family: root.fontFamily
+                    font.pixelSize: Style.font.bodySmall
+                  }
+                }
+                // Search results: \u2606 adds the place as a favourite, \u2605 removes
+                // it, without switching to it. A full list takes no more
+                // (Model.FAVORITES_MAX).
+                MouseArea {
+                  id: starArea
+                  readonly property bool starred: Model.isFavorite(root.favorites, dropdownRow.modelData)
+                  readonly property bool canAdd: root.favorites.length < Model.FAVORITES_MAX
+                  visible: !dropdownRow.favorite
+                  anchors.right: parent.right
+                  anchors.rightMargin: Style.space(8)
+                  anchors.verticalCenter: parent.verticalCenter
+                  width: Style.space(24)
+                  height: parent.height
+                  hoverEnabled: true
+                  cursorShape: starred || canAdd ? Qt.PointingHandCursor : Qt.ArrowCursor
+                  onClicked: if (starred || canAdd) root.service.toggleFavorite(dropdownRow.modelData)
+
+                  Text {
+                    anchors.centerIn: parent
+                    text: starArea.starred ? "\uf005" : "\uf006"  // nf-fa-star / star_o
+                    color: starArea.starred ? Color.accent
+                      : starArea.containsMouse && starArea.canAdd ? root.fg : root.dim
+                    opacity: starArea.starred || starArea.canAdd ? 1 : 0.4
+                    font.family: root.fontFamily
+                    font.pixelSize: Style.font.bodySmall
+                  }
                 }
               }
             }
 
             Text {
-              visible: root.geocodeSearched && root.locationSuggestions.length === 0
+              visible: !root.showingFavorites && root.geocodeSearched && root.locationSuggestions.length === 0
               leftPadding: Style.space(16)
               text: root.t.noResults
               color: root.dim
@@ -1258,6 +1353,7 @@ Panel {
             property real lineSpacing: root.radarLineSpacing
             property real lineWidth: root.radarLineWidth
             property color lineColor: root.radarLineColor
+            property real darkMap: root.mapDarkness
             fragmentShader: Qt.resolvedUrl("shaders/radar.frag.qsb")
           }
 

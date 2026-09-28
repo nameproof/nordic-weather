@@ -517,9 +517,8 @@ function parseMoon(text, dateMs) {
   return {
     phaseDeg: p.moonphase,
     refMs: localDayStart(dateMs, 0) + 12 * HOUR_MS,
-    // Highest point in the day asked for (may be below the horizon).
-    highMs: p.high_moon ? parseIsoMs(p.high_moon.time) : NaN,
-    highElevation: p.high_moon && isNum(p.high_moon.disc_centre_elevation) ? p.high_moon.disc_centre_elevation : NaN
+    // Highest point in the day asked for.
+    highMs: p.high_moon ? parseIsoMs(p.high_moon.time) : NaN
   }
 }
 
@@ -578,6 +577,88 @@ function locationCommit(text, suggestions, selectedIndex) {
   if (!choices.length) return null
   var index = Math.max(0, Math.min(parseInt(selectedIndex, 10) || 0, choices.length - 1))
   return choices[index]
+}
+
+// ---------------------------------------------------------------- favourites
+
+// Favourite places, in the order added: { name, description, latitude,
+// longitude, elevation }, the same shape as a search result. Stored in a
+// file of this plugin's own (the current place lives in the shared
+// weather.json). A place is identified by its rounded coordinates.
+var FAVORITES_MAX = 8
+
+function placeKey(place) {
+  return place && hasCoordinates(place) ? roundCoord(place.latitude) + "," + roundCoord(place.longitude) : ""
+}
+
+function parseFavorites(text) {
+  var data = parseJson(text)
+  var list = Array.isArray(data) ? data : []
+  var out = [], seen = {}
+  for (var i = 0; i < list.length && out.length < FAVORITES_MAX; i++) {
+    var f = list[i]
+    if (!f || typeof f.name !== "string" || f.name.trim() === "") continue
+    var place = {
+      name: f.name.trim(),
+      description: typeof f.description === "string" ? f.description : "",
+      latitude: Number(f.latitude),
+      longitude: Number(f.longitude),
+      elevation: isNum(f.elevation) ? f.elevation : null
+    }
+    var key = placeKey(place)
+    if (key === "" || seen[key]) continue
+    seen[key] = true
+    out.push(place)
+  }
+  return out
+}
+
+function isFavorite(favorites, place) {
+  var key = placeKey(place)
+  if (key === "") return false
+  for (var i = 0; i < favorites.length; i++) if (placeKey(favorites[i]) === key) return true
+  return false
+}
+
+function removeFavorite(favorites, key) {
+  return favorites.filter(function(f) { return placeKey(f) !== key })
+}
+
+// Adds the place, or removes it if it is a favourite. A new place with a
+// full list leaves the list unchanged.
+function toggleFavorite(favorites, place) {
+  if (isFavorite(favorites, place)) return removeFavorite(favorites, placeKey(place))
+  if (!hasCoordinates(place) || favorites.length >= FAVORITES_MAX) return favorites
+  return favorites.concat([{
+    name: place.name,
+    description: place.description || "",
+    latitude: Number(place.latitude),
+    longitude: Number(place.longitude),
+    elevation: isNum(place.elevation) ? place.elevation : null
+  }])
+}
+
+// Rows for the search dropdown while the field is empty: every favourite,
+// the current place marked (shown dimmed).
+function favoriteRows(favorites, location) {
+  var current = placeKey(location)
+  return favorites.map(function(f) {
+    var key = placeKey(f)
+    return Object.assign({}, f, { key: "fav@" + key, placeKey: key, current: key === current })
+  })
+}
+
+// The favourite after (step 1) or before (step −1) the current place,
+// wrapping; the first one when the current place isn't a favourite. Null
+// when there is nowhere else to go.
+function stepFavorite(favorites, location, step) {
+  if (!favorites.length) return null
+  var key = placeKey(location), at = -1
+  for (var i = 0; i < favorites.length; i++) if (placeKey(favorites[i]) === key) at = i
+  if (at < 0) return favorites[0]
+  if (favorites.length === 1) return null
+  var n = favorites.length
+  return favorites[((at + (step < 0 ? -1 : 1)) % n + n) % n]
 }
 
 // ---------------------------------------------------------------- view model
@@ -897,9 +978,8 @@ function buildMoon(moon, nowMs, lang) {
     // Share of the disc that is lit: 0 % at new moon, 100 % at full.
     // Rounded down so "100 %" means actually full, not a day early.
     illumination: Math.floor((1 - Math.cos(phase * Math.PI / 180)) / 2 * 100 + 1e-9),
-    // "högst 01:08 (37°)"; "" without high-moon data.
-    high: isNum(moon.highMs) && isNum(moon.highElevation)
-      ? strings(lang).moonHigh + " " + localClock(moon.highMs) + " (" + Math.round(moon.highElevation) + "°)" : ""
+    // "högst 01:08"; "" without high-moon data.
+    high: isNum(moon.highMs) ? strings(lang).moonHigh + " " + localClock(moon.highMs) : ""
   }
 }
 
@@ -1601,6 +1681,14 @@ if (typeof module !== "undefined") {
     buildCurrent: buildCurrent,
     buildHourlyDays: buildHourlyDays,
     pressureAt: pressureAt,
+    FAVORITES_MAX: FAVORITES_MAX,
+    placeKey: placeKey,
+    parseFavorites: parseFavorites,
+    isFavorite: isFavorite,
+    removeFavorite: removeFavorite,
+    toggleFavorite: toggleFavorite,
+    favoriteRows: favoriteRows,
+    stepFavorite: stepFavorite,
     YR_LIGHTNING_URL: YR_LIGHTNING_URL,
     LIGHTNING_FRAME_MS: LIGHTNING_FRAME_MS,
     LIGHTNING_TRAIL_MS: LIGHTNING_TRAIL_MS,

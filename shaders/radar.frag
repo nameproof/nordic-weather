@@ -10,6 +10,13 @@
 // observation: yr.no's frames disagree on it (a radar missing from one
 // observation, forecast frames filling the gaps as they run ahead), which
 // would make it change shape through the loop.
+//
+// The palette is made for a light map: light rain is pale cyan (#91e4ff),
+// heavy rain deep blue (#0055ff), extreme rain purple. On a dark map that
+// flips which stands out, so there (darkMap, 0 on light maps up to 1) the
+// blues become a ramp that brightens with intensity instead: light rain a
+// dim steel blue, partly see-through, rising to bright sky blue. Purples
+// stay as they are.
 layout(location = 0) in vec2 qt_TexCoord0;
 layout(location = 0) out vec4 fragColor;
 layout(std140, binding = 0) uniform buf {
@@ -21,6 +28,7 @@ layout(std140, binding = 0) uniform buf {
     float lineSpacing;
     float lineWidth;
     vec4 lineColor;
+    float darkMap;
 };
 layout(binding = 1) uniform sampler2D source;
 layout(binding = 2) uniform sampler2D coverageMap;
@@ -29,7 +37,17 @@ void main() {
     vec4 c = texture(source, qt_TexCoord0);
     float m = max(c.r, max(c.g, c.b));
     float s = m - min(c.r, min(c.g, c.b));
-    vec4 rain = vec4(c.rgb, m) * smoothstep(0.03, 0.08, m) * smoothstep(0.08, 0.2, s) * strength;
+    // The palette colour itself (undoing the fade into black at edges) and
+    // its intensity level: blue stays full while green falls, 0 at the
+    // lightest blue, 1 at the deepest. Purples (red up, green gone) are
+    // marked apart.
+    vec3 base = c.rgb / max(m, 0.001);
+    float level = clamp((1.0 - base.g - 0.1) / 0.6, 0.0, 1.0);
+    float purple = smoothstep(0.15, 0.35, base.r) * (1.0 - smoothstep(0.3, 0.5, base.g));
+    vec3 ramp = mix(mix(vec3(0.16, 0.33, 0.55), vec3(0.45, 0.80, 1.0), level), base, purple);
+    vec3 col = mix(base, ramp, darkMap);
+    float a = m * mix(1.0, mix(0.55, 1.0, level), darkMap);
+    vec4 rain = vec4(col * a, a) * smoothstep(0.03, 0.08, m) * smoothstep(0.08, 0.2, s) * strength;
 
     vec4 cov = texture(coverageMap, qt_TexCoord0);
     float cm = max(cov.r, max(cov.g, cov.b));

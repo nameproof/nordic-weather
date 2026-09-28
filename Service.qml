@@ -393,6 +393,33 @@ Scope {
     locationSaved()
   }
 
+  // ---------------------------------------------------------------- favourites
+
+  // Model.parseFavorites; this plugin's own file, next to the shared
+  // weather.json.
+  readonly property string favoritesPath: Quickshell.env("HOME") + "/.local/state/omarchy/settings/nordic-weather-favorites.json"
+  property var favorites: []
+
+  function setFavorites(list) {
+    favorites = list
+    favoritesFile.setText(JSON.stringify(list, null, 2) + "\n")
+  }
+
+  // Star or unstar a search result (it keeps its description and elevation).
+  function toggleFavorite(place) {
+    setFavorites(Model.toggleFavorite(favorites, place))
+  }
+
+  function removeFavorite(key) {
+    setFavorites(Model.removeFavorite(favorites, key))
+  }
+
+  // Next or previous favourite (IPC, for a keybind).
+  function stepFavorite(step) {
+    var next = Model.stepFavorite(favorites, location, step)
+    if (next) pickSuggestion(next)
+  }
+
   function persistLocation(args) {
     locationSaveProc.command = ["omarchy-weather-location"].concat(args)
     locationSaveProc.running = true
@@ -673,6 +700,8 @@ Scope {
     function radar(): void { root.openPanelWith("radar") }
     function refresh(): void { root.refresh(true) }
     function mapZoom(step: int): void { root.setMapStep(step) }
+    // Switch to the next or previous favourite place.
+    function favorite(direction: string): void { root.stepFavorite(direction === "previous" ? -1 : 1) }
     // For scripts: "Alingsås · Klart 12° · Vind 2 m/s S · …" and "12°".
     function summary(): string { return Model.summaryText(root.view) }
     function temperature(): string {
@@ -705,9 +734,20 @@ Scope {
     onTriggered: locationFile.reload()
   }
 
+  FileView {
+    id: favoritesFile
+    path: root.favoritesPath
+    watchChanges: true
+    atomicWrites: true
+    printErrors: false
+    onFileChanged: reload()
+    onLoaded: root.favorites = Model.parseFavorites(text())
+  }
+
   Process {
     id: mkdirProc
-    command: ["mkdir", "-p", root.cacheDir]
+    // The settings folder too, for the favourites file.
+    command: ["mkdir", "-p", root.cacheDir, Quickshell.env("HOME") + "/.local/state/omarchy/settings"]
     running: true
     onExited: cacheFile.path = root.cacheDir + "/cache.json"
   }
