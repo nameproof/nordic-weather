@@ -233,16 +233,16 @@ returns a single object. QML only binds to it and never touches raw API JSON.
     points: [ { t: "14:45", rate: 0.0 }, ... ]   // 5-min steps, for a sparkline
   },
   days: [                         // hourlyDays entries
-    { title: "Idag 26 sep",
+    { title: "Idag 26 sep", precipGlyph: "",
       rows: [ { hour: "15", icon: "", description: "Klart", temp: 16,
                 tempRange: [15, 17],           // p10/p90, omitted if span < 2°
-                precip: { probability: 0, amount: "", thunder: 0 },
+                precip: { probability: 0, amount: "", thunder: 0, kind: "" },   // kind: rain/sleet/snow
                 wind: { speed: 6, gust: 12, dirDeg: 259 } } ] }
   ],
   longRange: [                    // one row per day, up to 10
     { day: "Mån", icon: "", min: 12, max: 18, precip: "0 mm", precipProbability: 10 }
   ],
-  sun:  { rise: "07:02", set: "18:57", dayLength: "11 h 55 min" },
+  sun:  { rise: "07:02", set: "18:57" },
   moon: { phaseDeg: 171, phaseName: "Fullmåne", rise: "18:30", set: "06:38" },
   attribution: "♥ MET Norway"
 }
@@ -279,8 +279,9 @@ returns a single object. QML only binds to it and never touches raw API JSON.
 
 - **Text:** `<icon> <temp>°`, e.g. ` 16°`. Hidden until the first data or
   cache load (the built-in's `visible: label !== ""` rule).
-- **Stale data:** the pill is dimmed to 60% opacity, and the tooltip says when
-  it was last updated.
+- **Stale data:** the pill is dimmed to 60% opacity, and the panel footer
+  says how old the forecast is ("Inaktuell · prognos från 14:30"). Otherwise
+  the footer shows no update time.
 - **Clicks:**
   - Left click opens or closes the panel.
   - Middle click refreshes. `Expires` is ignored, but `If-Modified-Since` is
@@ -301,7 +302,7 @@ gets taller than the screen allows.
 ├──────────────────────────────────────────────────────────────┤
 │  ☂ Uppehåll kommande 2 timmar          ▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁  │
 ├──────────────────────────────────────────────────────────────┤
-│  IDAG 26 SEP                                                  │
+│  IDAG 26 SEP                                               │
 │  15    Klart              16°      0%          6 ↗  (12)     │
 │  18    Växlande           14°     10%          4 ↗  ( 9)     │
 │  21    Växlande molnighet 12°     10%          3 →  ( 7)     │
@@ -312,16 +313,20 @@ gets taller than the screen allows.
 │  MÅNDAG 28 SEP                                                │
 │  …                                                             │
 ├──────────────────────────────────────────────────────────────┤
-│  KOMMANDE DAGAR                                               │
 │  Tis     12° ████████░░ 18°    0 mm                          │
 │  Ons     12° ██████████ 21°    0 mm                          │
 │  Tor     12° ██████████ 21°    0 mm                          │
 │  …                                                             │
 ├──────────────────────────────────────────────────────────────┤
-│   07:02   18:57  (11 h 55 min)      Fullmåne  ↑18:30     │
-│  Data: MET Norway · CC BY 4.0                  Uppdaterad 14:30│
+│   07:02   18:57                    Fullmåne  ↑18:30     │
 └──────────────────────────────────────────────────────────────┘
 ```
+
+The icons over temperature, precipitation chance and wind appear on the
+first day only. The precipitation icon is a raindrop, a raindrop and a
+snowflake (sleet), or a snowflake: the kind of the day's most likely
+precipitation, or with none in any symbol, a snowflake when every row is
+at or below 0°. The credits sit under the radar pane while it is open.
 
 While searching, the hero's place name becomes the field, and the suggestions
 push the rest of the panel down:

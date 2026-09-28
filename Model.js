@@ -40,8 +40,7 @@ var STRINGS = {
     wind: "Vind",
     humidity: "Fukt",
     gust: "byar",
-    comingDays: "Kommande dagar",
-    updated: "Uppdaterad",
+    forecastFrom: "prognos från",
     stale: "Inaktuell",
     fetching: "Hämtar prognos…",
     searchPlaceholder: "Sök plats",
@@ -57,9 +56,9 @@ var STRINGS = {
     nowcastWetAll: "{kind} närmaste {n} min",
     nowcastStopping: "{kind} nu, upphör om ca {n} min",
     nowcastStarting: "{kind} om ca {n} min",
-    dayLength: "{h} h {m} min",
     radar: "Radar",
     radarLoading: "Hämtar radar…",
+    radarNow: "Nu",
     forecastWord: "Prognos",
     symbols: {
       clearsky: "Klart",
@@ -82,8 +81,7 @@ var STRINGS = {
     wind: "Wind",
     humidity: "Humidity",
     gust: "gusts",
-    comingDays: "Coming days",
-    updated: "Updated",
+    forecastFrom: "forecast from",
     stale: "Stale",
     fetching: "Fetching forecast…",
     searchPlaceholder: "Search place",
@@ -99,9 +97,9 @@ var STRINGS = {
     nowcastWetAll: "{kind} for the next {n} min",
     nowcastStopping: "{kind} now, stopping in ~{n} min",
     nowcastStarting: "{kind} in ~{n} min",
-    dayLength: "{h} h {m} min",
     radar: "Radar",
     radarLoading: "Loading radar…",
+    radarNow: "Now",
     forecastWord: "Forecast",
     symbols: {
       clearsky: "Clear sky",
@@ -651,7 +649,8 @@ function buildRow(step, lang, sixHour) {
     precip: {
       probability: isNum(pd.probability_of_precipitation) ? Math.round(pd.probability_of_precipitation) : null,
       text: formatPrecip(pd.precipitation_amount, pd.precipitation_amount_min, pd.precipitation_amount_max, lang),
-      thunder: isNum(pd.probability_of_thunder) ? Math.round(pd.probability_of_thunder) : 0
+      thunder: isNum(pd.probability_of_thunder) ? Math.round(pd.probability_of_thunder) : 0,
+      kind: precipKind(period ? period.symbol : "")
     },
     wind: {
       speed: isNum(d.wind_speed) ? Math.round(d.wind_speed) : null,
@@ -660,6 +659,25 @@ function buildRow(step, lang, sixHour) {
       arrow: windArrow(d.wind_from_direction)
     }
   }
+}
+
+var PRECIP_GLYPHS = {
+  rain: "\ue371",   // raindrop
+  sleet: "\ue371\ue36f",  // raindrop and snowflake
+  snow: "\ue36f"    // snowflake_cold
+}
+
+// Glyph for a day's precipitation column: the kind (rain, sleet, snow) of
+// its most likely precipitation. With none in any symbol, snow when every
+// row is at or below 0°, otherwise rain.
+function precipGlyph(rows) {
+  var best = null
+  for (var i = 0; i < rows.length; i++) {
+    var r = rows[i]
+    if (r.precip.kind && (best === null || (r.precip.probability || 0) > (best.precip.probability || 0))) best = r
+  }
+  var frozen = rows.length > 0 && rows.every(function(row) { return row.temp !== null && row.temp <= 0 })
+  return PRECIP_GLYPHS[best ? best.precip.kind : frozen ? "snow" : "rain"]
 }
 
 // Sections for today and the following days. Today and tomorrow get rows
@@ -692,7 +710,8 @@ function buildHourlyDays(forecast, nowMs, hourStep, dayCount, lang) {
       }
       rows.push(buildRow(s, lang, sixHour))
     }
-    if (rows.length) days.push({ start: start, title: dayTitle(start, todayStart, lang), sixHour: sixHour, rows: rows })
+    if (rows.length) days.push({ start: start, title: dayTitle(start, todayStart, lang), sixHour: sixHour,
+                                 precipGlyph: precipGlyph(rows), rows: rows })
   }
   return days
 }
@@ -822,16 +841,10 @@ function buildNowcast(nowcast, nowMs, lang) {
   return { summary: summary, wet: firstWet >= 0, points: points, maxRate: maxRate }
 }
 
-function buildSun(sun, lang) {
+function buildSun(sun) {
   if (!sun) return null
-  var out = { rise: isNum(sun.riseMs) ? localClock(sun.riseMs) : "—",
-              set: isNum(sun.setMs) ? localClock(sun.setMs) : "—",
-              dayLength: "" }
-  if (isNum(sun.riseMs) && isNum(sun.setMs) && sun.setMs > sun.riseMs) {
-    var minutes = Math.round((sun.setMs - sun.riseMs) / 60000)
-    out.dayLength = fill(strings(lang).dayLength, { h: Math.floor(minutes / 60), m: minutes % 60 })
-  }
-  return out
+  return { rise: isNum(sun.riseMs) ? localClock(sun.riseMs) : "—",
+           set: isNum(sun.setMs) ? localClock(sun.setMs) : "—" }
 }
 
 function buildMoon(moon, nowMs, lang) {
@@ -887,7 +900,7 @@ function buildView(input) {
     days: [],
     longRange: [],
     longRangeScale: { min: 0, max: 1 },
-    sun: buildSun(input.sun, lang),
+    sun: buildSun(input.sun),
     moon: buildMoon(input.moon, nowMs, lang),
     attribution: "\uf004 MET Norway"  // nf-fa-heart
   }
@@ -926,7 +939,7 @@ var YR_RADAR_NOWCAST_INDEX = YR_TILES + "/api/precipitation-nowcast/available.js
 // The radar tiles stop at zoom 6; at 7 they are drawn scaled up.
 var YR_RADAR_ZOOM = 6
 var MAP_TILE_PX = 256
-// Appended to the panel footer's credits while the radar map is shown.
+// Credited after MET Norway, under the radar map.
 var MAP_ATTRIBUTION = " · OpenStreetMap · yr.no"
 // Zoom steps: which tiles, drawn at how many px per tile. Step 1 draws the
 // zoom-6 tiles at 181 px (≈ zoom 5.5: shrinking keeps them sharp). Across
@@ -1130,20 +1143,24 @@ function radarFrameAt(frames, timeMs) {
 }
 
 // The time ruler on the yr.no map: one tick per frame. level is 1 at "now"
-// (the last observed frame) and falls off linearly towards both ends; hour
-// marks full local hours. The key covers everything a tick draws, since a
-// ScriptModel keeps a delegate with an unchanged key as it is.
-function rulerTicks(frames, nowIndex) {
+// (the last observed frame) and falls off linearly towards both ends. Ticks
+// a whole number of hours from now get a stamp under the map ("−1 h", "Nu",
+// "+1 h") and are drawn a little stronger. The key covers everything a tick
+// draws, since a ScriptModel keeps a delegate with an unchanged key as it is.
+function rulerTicks(frames, nowIndex, lang) {
   var n = (frames || []).length
   var now = Math.max(0, Math.min(n - 1, nowIndex))
   var reach = Math.max(now, n - 1 - now, 1)
   var out = []
   for (var i = 0; i < n; i++) {
     var level = Math.round((1 - Math.abs(i - now) / reach) * 1000) / 1000
-    var hour = new Date(frames[i].timeMs).getMinutes() === 0
+    var offset = frames[i].timeMs - frames[now].timeMs
+    var stamp = offset % HOUR_MS !== 0 ? ""
+      : offset === 0 ? strings(lang).radarNow
+      : (offset < 0 ? "\u2212" : "+") + Math.abs(offset) / HOUR_MS + " h"
     var forecast = !!frames[i].forecast
-    out.push({ level: level, hour: hour, forecast: forecast,
-               key: frames[i].timeMs + "|" + level + "|" + hour + "|" + forecast })
+    out.push({ index: i, level: level, stamp: stamp, forecast: forecast,
+               key: frames[i].timeMs + "|" + level + "|" + stamp + "|" + forecast })
   }
   return out
 }
@@ -1403,6 +1420,7 @@ if (typeof module !== "undefined") {
     locationCommit: locationCommit,
     buildCurrent: buildCurrent,
     buildHourlyDays: buildHourlyDays,
+    precipGlyph: precipGlyph,
     buildLongRange: buildLongRange,
     buildNowcast: buildNowcast,
     buildView: buildView,

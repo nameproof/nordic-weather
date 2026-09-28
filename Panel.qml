@@ -164,6 +164,11 @@ Panel {
   function seekFrame(index) { if (service) service.seekFrame(index) }
   function stepFrame(delta) { if (service) service.stepFrame(delta) }
 
+  // The time ruler's ticks (Model.rulerTicks), shared by the ruler on the map
+  // and the stamps under it, which use the same inset.
+  readonly property var rulerTicks: yrRadarActive ? Model.rulerTicks(yrDisplay.frames, yrDisplay.nowIndex, lang) : []
+  readonly property int rulerPad: Style.space(16)
+
   // Labels depend on this panel's font, so they are placed here.
   FontMetrics {
     id: mapLabelMetrics
@@ -289,7 +294,8 @@ Panel {
     centerOnBar: true
     focusTarget: keyCatcher
     contentWidth: panel.fittedContentWidth(root.forecastWidth + (root.radarOpen ? root.radarGap + root.radarMapWidth : 0))
-    contentHeight: panel.fittedContentHeight(Math.max(weatherColumn.implicitHeight, root.radarOpen ? radarPane.implicitHeight : 0))
+    contentHeight: panel.fittedContentHeight(Math.max(weatherColumn.implicitHeight,
+      root.radarOpen ? radarPane.implicitHeight + Style.space(8) + credits.implicitHeight : 0))
 
     PanelKeyCatcher {
       id: keyCatcher
@@ -724,23 +730,69 @@ Panel {
             model: ScriptModel { values: root.view.ready ? root.view.days : []; objectProp: "key" }
 
             Column {
+              id: daySection
               required property var modelData
+              required property int index
               width: weatherColumn.width
               spacing: Style.space(2)
 
               PanelSeparator { width: parent.width }
 
-              Text {
-                topPadding: Style.space(6)
-                bottomPadding: Style.space(4)
-                leftPadding: Style.space(8)
-                textFormat: Text.PlainText
-                text: modelData.title.toUpperCase()
-                color: root.dim
-                font.family: root.fontFamily
-                font.pixelSize: Style.font.caption
-                font.letterSpacing: 1
-                font.bold: true
+              Item {
+                width: parent.width
+                height: dayTitle.implicitHeight
+
+                Text {
+                  id: dayTitle
+                  topPadding: Style.space(6)
+                  bottomPadding: Style.space(4)
+                  leftPadding: Style.space(8)
+                  textFormat: Text.PlainText
+                  text: daySection.modelData.title.toUpperCase()
+                  color: root.dim
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.caption
+                  font.letterSpacing: 1
+                  font.bold: true
+                }
+
+                // Column icons over temperature, precipitation chance and
+                // wind, on the first day only. Column edges as in the rows
+                // below (laid out right to left from the row's padding).
+                Item {
+                  id: columnIcons
+                  visible: daySection.index === 0
+                  anchors.fill: parent
+                  anchors.topMargin: dayTitle.topPadding
+                  anchors.bottomMargin: dayTitle.bottomPadding
+
+                  readonly property real charWidth: gustMetrics.advanceWidth / 4
+                  readonly property real gap: Style.space(6)
+                  readonly property real windX: width - Style.space(8) - root.colWind
+                  readonly property real popRight: windX - gap - root.colAmount - gap
+                  readonly property real tempRight: popRight - root.colPop - gap
+
+                  component ColumnIcon: Text {
+                    required property real center
+                    property real glyphScale: 1
+                    x: Math.round(center - width / 2)
+                    width: Style.space(16)
+                    anchors.verticalCenter: parent.verticalCenter
+                    horizontalAlignment: Text.AlignHCenter
+                    textFormat: Text.PlainText
+                    color: root.dim
+                    font.family: root.fontFamily
+                    font.pixelSize: Math.round(Style.font.body * glyphScale)
+                  }
+                  // Over "16°" (the "±2" after it is dim).
+                  ColumnIcon { center: columnIcons.tempRight - 3.5 * columnIcons.charWidth; text: "\ue34e"; glyphScale: 11 / 14 }  // thermometer exterior
+                  ColumnIcon { center: columnIcons.popRight - columnIcons.charWidth; text: daySection.modelData.precipGlyph }  // rain, sleet or snow
+                  // Over the arrow, between speed and gust.
+                  ColumnIcon {
+                    center: columnIcons.windX + root.windSpeedWidth + root.windGap + root.windArrowWidth / 2
+                    text: "\ue34b"  // strong wind
+                  }
+                }
               }
 
               Repeater {
@@ -861,18 +913,8 @@ Panel {
 
             PanelSeparator { width: parent.width }
 
-            Text {
-              topPadding: Style.space(6)
-              bottomPadding: Style.space(4)
-              leftPadding: Style.space(8)
-              textFormat: Text.PlainText
-              text: root.t.comingDays.toUpperCase()
-              color: root.dim
-              font.family: root.fontFamily
-              font.pixelSize: Style.font.caption
-              font.letterSpacing: 1
-              font.bold: true
-            }
+            // Room between the separator and the first day.
+            Item { width: 1; height: Style.space(6) }
 
             Repeater {
               model: ScriptModel { values: root.view.ready ? root.view.longRange : []; objectProp: "key" }
@@ -961,7 +1003,7 @@ Panel {
             }
           }
 
-          // ---- Footer: sun, moon, attribution, freshness.
+          // ---- Footer: sun, moon, and a warning when the forecast is stale.
           Column {
             visible: root.view.ready
             width: parent.width
@@ -973,28 +1015,16 @@ Panel {
               width: parent.width
               height: sunRow.implicitHeight
 
-              Row {
+              Text {
                 id: sunRow
                 anchors.left: parent.left
                 anchors.leftMargin: Style.space(8)
-                spacing: Style.space(10)
                 visible: !!root.view.sun
-
-                Text {
-                  textFormat: Text.PlainText
-                  text: root.view.sun ? " " + root.view.sun.rise + "    " + root.view.sun.set : ""
-                  color: root.fg
-                  font.family: root.fontFamily
-                  font.pixelSize: Style.font.bodySmall
-                }
-                Text {
-                  textFormat: Text.PlainText
-                  visible: text !== ""
-                  text: root.view.sun && root.view.sun.dayLength !== "" ? "(" + root.view.sun.dayLength + ")" : ""
-                  color: root.dim
-                  font.family: root.fontFamily
-                  font.pixelSize: Style.font.bodySmall
-                }
+                textFormat: Text.PlainText
+                text: root.view.sun ? " " + root.view.sun.rise + "    " + root.view.sun.set : ""
+                color: root.fg
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.bodySmall
               }
 
               Text {
@@ -1013,25 +1043,19 @@ Panel {
 
             Item {
               width: parent.width
-              height: attributionText.implicitHeight
+              height: staleText.implicitHeight
+              visible: root.stale
 
+              // Only when the forecast is well past its expiry (offline, or
+              // MET down): how old it is. Its parts refresh on their own
+              // schedules, so one "updated" time would mislead otherwise.
               Text {
-                id: attributionText
-                anchors.left: parent.left
-                anchors.leftMargin: Style.space(8)
-                textFormat: Text.PlainText
-                // The one place for credits; the map's are added while it is shown.
-                text: root.view.attribution + (root.yrRadarActive ? Model.MAP_ATTRIBUTION : "")
-                color: root.faint
-                font.family: root.fontFamily
-                font.pixelSize: Style.font.caption
-              }
-              Text {
+                id: staleText
                 anchors.right: parent.right
                 anchors.rightMargin: Style.space(8)
                 textFormat: Text.PlainText
-                text: (root.stale ? root.t.stale + " · " : "") + root.t.updated + " " + root.view.updatedAt
-                color: root.stale ? root.fg : root.faint
+                text: root.t.stale + (root.view.updatedAt !== "" ? " · " + root.t.forecastFrom + " " + root.view.updatedAt : "")
+                color: root.fg
                 font.family: root.fontFamily
                 font.pixelSize: Style.font.caption
               }
@@ -1085,35 +1109,67 @@ Panel {
           }
         }
 
+        // Under the ruler's stamped ticks: how far they are from now. On the
+        // right, a status: loading, or paused. The exact time of any frame
+        // shows while hovering the ruler.
         Item {
+          id: stampRow
           width: radarBox.width
-          height: radarFrameLabel.implicitHeight
+          height: radarStatus.implicitHeight
+          visible: root.yrRadarActive
+
+          readonly property int count: root.rulerTicks.length
+          // The map inside radarBox's 1 px border, as the ruler measures it.
+          readonly property real step: count > 1 ? (width - 2 - 2 * root.rulerPad) / (count - 1) : 0
+
+          Repeater {
+            model: ScriptModel {
+              values: root.rulerTicks.filter(function(t) { return t.stamp !== "" })
+              objectProp: "key"
+            }
+
+            Text {
+              required property var modelData
+              x: Math.round(1 + root.rulerPad + modelData.index * stampRow.step - width / 2)
+              // Clear of the status text when it shows.
+              visible: radarStatus.text === "" || x + width < radarStatus.x - Style.space(8)
+              textFormat: Text.PlainText
+              text: modelData.stamp
+              color: modelData.forecast ? Color.accent : modelData.level === 1 ? root.dim : root.faint
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+            }
+          }
 
           Text {
-            id: radarFrameLabel
-            anchors.left: parent.left
-            anchors.leftMargin: Style.space(4)
-            textFormat: Text.PlainText
-            // Local time of the frame on screen.
-            text: Model.mapFrameLabel(root.yrCurrentFrame, root.lang) + (root.yrPaused ? "  ⏸" : "")
-            color: root.yrCurrentFrame && root.yrCurrentFrame.forecast ? Color.accent : root.fg
-            font.family: root.fontFamily
-            font.pixelSize: Style.font.body
-          }
-          Text {
+            id: radarStatus
             anchors.right: parent.right
             anchors.rightMargin: Style.space(4)
-            anchors.verticalCenter: radarFrameLabel.verticalCenter
             textFormat: Text.PlainText
-            // Only a status: while a zoom level's radar tiles are still
-            // downloading (the first visit fetches several hundred). Credits
-            // live in the panel footer.
-            text: root.yrRadarActive && !root.yrPlaying ? root.t.radarLoading : ""
+            // While a zoom level's first frames are still downloading (a
+            // first visit fetches several hundred tiles), or paused.
+            text: !root.yrPlaying ? root.t.radarLoading : root.yrPaused ? "⏸" : ""
             color: root.faint
             font.family: root.fontFamily
             font.pixelSize: Style.font.caption
           }
         }
+      }
+
+      // The one place for credits: the forecast (MET Norway), the base map
+      // and the radar. Bottom right, level with the footer's sun and moon.
+      Text {
+        id: credits
+        visible: root.radarOpen
+        // Right-aligned with the map (which can be narrower than its pane).
+        x: radarPane.x + radarBox.width - width - Style.space(4)
+        anchors.bottom: parent.bottom
+        anchors.bottomMargin: Math.round((sunRow.implicitHeight - implicitHeight) / 2)
+        textFormat: Text.PlainText
+        text: root.view.attribution + Model.MAP_ATTRIBUTION
+        color: root.faint
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.caption
       }
 
       Component {
@@ -1286,9 +1342,9 @@ Panel {
             height: Style.space(36)
             visible: count > 1
 
-            readonly property var ticks: Model.rulerTicks(root.yrDisplay.frames, root.yrDisplay.nowIndex)
+            readonly property var ticks: root.rulerTicks
             readonly property int count: ticks.length
-            readonly property int pad: Style.space(16)
+            readonly property int pad: root.rulerPad
             readonly property real step: count > 1 ? (width - 2 * pad) / (count - 1) : 0
             readonly property int current: Math.min(root.yrFrame, count - 1)
             readonly property int tickMin: Style.space(2)
@@ -1332,12 +1388,12 @@ Panel {
                 height: Math.round((isCurrent ? Math.max(Style.space(18), base + Style.space(6)) : base) * ruler.grow)
                 radius: 1
                 color: isCurrent && modelData.forecast ? Color.accent : root.fg
-                // Not downloaded yet: barely there. Now and full hours a bit
-                // stronger.
+                // Not downloaded yet: barely there. Now and the stamped hours
+                // a bit stronger.
                 opacity: isCurrent ? 1
                   : modelData.level === 1 ? 0.8
                   : index >= root.yrPlayLimit ? 0.12
-                  : (index < ruler.current ? 0.55 : 0.3) + (modelData.hour ? 0.15 : 0)
+                  : (index < ruler.current ? 0.55 : 0.3) + (modelData.stamp !== "" ? 0.15 : 0)
               }
             }
 

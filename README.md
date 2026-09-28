@@ -21,7 +21,9 @@ the data behind yr.no.
   forecast. Zoomed out it shows the whole Nordic radar area; zoomed in it
   follows your location but never leaves the radar's coverage, and areas
   without radar are dimmed. Zoom with + / − or the mouse wheel; click the
-  map to pause. The base map ships with the plugin (see below); only the
+  map to pause. A ruler along the bottom shows where the loop is, with
+  −1 h / Nu / +1 h marked under the map; drag it to scrub, hover it for the
+  exact time. The base map ships with the plugin (see below); only the
   radar tiles come from yr.no's undocumented tile server, so that part may
   break if yr.no changes it.
 

@@ -230,6 +230,19 @@ test("hourly days: 3 h steps, then 6 h steps past the hourly range", () => {
   assert.equal(M.buildHourlyDays(alingsas, NOW, 3, 3, "en")[2].title, "Monday Sep 28")
 })
 
+test("day precipitation glyph follows the most likely kind", () => {
+  const row = (kind, probability, temp) => ({ temp: temp, precip: { kind: kind, probability: probability } })
+  assert.equal(M.precipGlyph([row("", 0, 5), row("rain", 40, 3)]), "\ue371")
+  assert.equal(M.precipGlyph([row("rain", 20, 1), row("snow", 60, -1)]), "\ue36f")
+  assert.equal(M.precipGlyph([row("sleet", 50, 1), row("snow", 30, 0)]), "\ue371\ue36f")
+  // No precipitation symbol: snow only when every row is frozen.
+  assert.equal(M.precipGlyph([row("", 0, -4), row("", 5, -1)]), "\ue36f")
+  assert.equal(M.precipGlyph([row("", 0, -4), row("", 5, 1)]), "\ue371")
+  assert.equal(M.precipGlyph([row("", 0, null)]), "\ue371")
+  const days = M.buildHourlyDays(alingsas, NOW, 3, 3, "sv")
+  assert.ok(days.every((d) => d.precipGlyph === M.precipGlyph(d.rows)))
+})
+
 test("hourly rows carry precipitation, spread and wind", () => {
   const days = M.buildHourlyDays(bergen, Date.parse(bergen.steps[0].ms ? new Date(bergen.steps[0].ms).toISOString() : 0), 1, 3, "sv")
   const rows = days.flatMap((d) => d.rows)
@@ -291,7 +304,7 @@ test("nowcast summary", () => {
 test("sun and moon", () => {
   const view = M.buildView({ forecast: alingsas, sun, moon, location: { name: "Alingsås", latitude: 57.93, longitude: 12.53 },
                              lang: "sv", nowMs: NOW, settings: {} })
-  assert.deepEqual(view.sun, { rise: "07:03", set: "18:58", dayLength: "11 h 55 min" })
+  assert.deepEqual(view.sun, { rise: "07:03", set: "18:58" })
   assert.equal(view.moon.name, "Fullmåne")  // 171°, within ±22.5° of full
   assert.equal(view.moon.rise, "18:31")
   assert.equal(view.moon.illumination, 99)  // 171°
@@ -577,20 +590,26 @@ test("radar frame-list keys differ whenever any frame's run or time does", () =>
   assert.equal(M.radarFramesKey([]), "")
 })
 
-test("time ruler: tallest at now, falling off to both ends, hours marked", () => {
+test("time ruler: tallest at now, falling off to both ends, stamped at whole hours from now", () => {
   const t0 = Date.parse("2026-09-27T07:50:00Z")  // 09:50 local
   const frames = Array.from({ length: 7 }, (_, i) => ({ timeMs: t0 + i * 300000, forecast: i > 2 }))
-  const ticks = M.rulerTicks(frames, 2)
+  const ticks = M.rulerTicks(frames, 2, "sv")
   assert.deepEqual(ticks.map((t) => t.level), [0.5, 0.75, 1, 0.75, 0.5, 0.25, 0])
-  assert.deepEqual(ticks.map((t) => t.hour), [false, false, true, false, false, false, false])  // 10:00
+  assert.deepEqual(ticks.map((t) => t.stamp), ["", "", "Nu", "", "", "", ""])
   assert.deepEqual(ticks.map((t) => t.forecast), [false, false, false, true, true, true, true])
   assert.equal(new Set(ticks.map((t) => t.key)).size, ticks.length)
   // A new "now" changes the levels, so the keys change too (ScriptModel).
-  assert.notEqual(M.rulerTicks(frames, 3)[0].key, ticks[0].key)
+  assert.notEqual(M.rulerTicks(frames, 3, "sv")[0].key, ticks[0].key)
   // No observations: the ruler peaks at the first frame.
-  assert.equal(M.rulerTicks(frames, -1)[0].level, 1)
-  assert.deepEqual(M.rulerTicks([], 0), [])
-  assert.deepEqual(M.rulerTicks([frames[0]], 0).map((t) => t.level), [1])
+  assert.equal(M.rulerTicks(frames, -1, "sv")[0].level, 1)
+  assert.deepEqual(M.rulerTicks([], 0, "sv"), [])
+  assert.deepEqual(M.rulerTicks([frames[0]], 0, "en").map((t) => t.stamp), ["Now"])
+  // A loop like yr.no's: 17 observations up to now, 23 forecast frames.
+  // Stamps sit a whole number of hours from now, whatever the clock says.
+  const now = Date.parse("2026-09-27T08:07:00Z") - 7 * 60000 + 300000   // 10:05 local, not a full hour
+  const loop = Array.from({ length: 41 }, (_, i) => ({ timeMs: now + (i - 17) * 300000, forecast: i > 17 }))
+  const stamps = M.rulerTicks(loop, 17, "en").map((t, i) => [i, t.stamp]).filter(([, s]) => s)
+  assert.deepEqual(stamps, [[5, "\u22121 h"], [17, "Now"], [29, "+1 h"]])
 })
 
 test("radar: rotating slots retain decoded endpoints across advancement and wrap", () => {
