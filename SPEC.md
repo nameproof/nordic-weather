@@ -226,6 +226,7 @@ returns a single object. QML only binds to it and never touches raw API JSON.
     temp: 16, feelsLike: 16,
     wind: { speed: 5.9, gust: 11.9, dirDeg: 259, dirLabel: "V" },
     humidity: 55, cloud: 2, fog: 0, uv: 1.4,
+    pressure: { value: 1016, change: -1.4, arrow: "↘", changeText: "−1,4 på 3 h" },   // or null
     precipNextHour: { amount: "0 mm", min: 0, max: 0, probability: 0 }
   },
   nowcast: {                      // null when no radar coverage / panel closed
@@ -243,7 +244,7 @@ returns a single object. QML only binds to it and never touches raw API JSON.
     { day: "Mån", icon: "", min: 12, max: 18, precip: "0 mm", precipProbability: 10 }
   ],
   sun:  { rise: "07:02", set: "18:57" },
-  moon: { phaseDeg: 171, phaseName: "Fullmåne", rise: "18:30", set: "06:38" },
+  moon: { phaseDeg: 171, phaseName: "Fullmåne", high: "högst 01:08 (37°)" },   // high_moon: time, elevation
   attribution: "♥ MET Norway"
 }
 ```
@@ -256,6 +257,12 @@ returns a single object. QML only binds to it and never touches raw API JSON.
   - Otherwise they come from the forecast step closest to now, not
     `timeseries[0]`. The symbol comes from that step's `next_1_hours`, falling
     back to `next_6_hours`.
+  - Pressure is `air_pressure_at_sea_level`, interpolated between forecast
+    steps to now. Its trend is the forecast change over the next 3 hours
+    (MET gives no past values): → under 1 hPa, ↗/↘ from 1 hPa, ↑/↓ from
+    3 hPa.
+  - The stats sit right of the temperature; the gaps between them shrink
+    (24 down to 10) when wide values would otherwise run into it.
 - **Hourly rows:**
   - A row is kept when `(local hour % hourStep) == 0` and the step is still in
     the future.
@@ -296,9 +303,9 @@ gets taller than the screen allows.
 ```
 ┌──────────────────────────────────────────────────────────────┐
 │                                           ⌖ ALINGSÅS          │
-│      16°C                    KÄNNS   VIND        FUKT         │
-│                              16°     6 m/s ↗ V   55%          │
-│   Klart                                (byar 12)              │
+│      16°C            KÄNNS   VIND        FUKT   TRYCK         │
+│                      16°     6 m/s V ↗   55%    1016 hPa ↘    │
+│   Klart                      (byar 12)          (−1,4 på 3 h) │
 ├──────────────────────────────────────────────────────────────┤
 │  ☂ Uppehåll kommande 2 timmar          ▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁  │
 ├──────────────────────────────────────────────────────────────┤
@@ -318,7 +325,7 @@ gets taller than the screen allows.
 │  Tor     12° ██████████ 21°    0 mm                          │
 │  …                                                             │
 ├──────────────────────────────────────────────────────────────┤
-│   07:02   18:57                    Fullmåne  ↑18:30     │
+│  07:02 18:57            Fullmåne 99%   högst 01:08 (37°)  │
 └──────────────────────────────────────────────────────────────┘
 ```
 

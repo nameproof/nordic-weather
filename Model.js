@@ -39,6 +39,9 @@ var STRINGS = {
     feels: "Känns som",
     wind: "Vind",
     humidity: "Fukt",
+    pressure: "Tryck",
+    pressureNext: "på 3 h",
+    moonHigh: "högst",
     gust: "byar",
     forecastFrom: "prognos från",
     stale: "Inaktuell",
@@ -80,6 +83,9 @@ var STRINGS = {
     feels: "Feels like",
     wind: "Wind",
     humidity: "Humidity",
+    pressure: "Pressure",
+    pressureNext: "in 3 h",
+    moonHigh: "highest",
     gust: "gusts",
     forecastFrom: "forecast from",
     stale: "Stale",
@@ -511,8 +517,9 @@ function parseMoon(text, dateMs) {
   return {
     phaseDeg: p.moonphase,
     refMs: localDayStart(dateMs, 0) + 12 * HOUR_MS,
-    riseMs: p.moonrise ? parseIsoMs(p.moonrise.time) : NaN,
-    setMs: p.moonset ? parseIsoMs(p.moonset.time) : NaN
+    // Highest point in the day asked for (may be below the horizon).
+    highMs: p.high_moon ? parseIsoMs(p.high_moon.time) : NaN,
+    highElevation: p.high_moon && isNum(p.high_moon.disc_centre_elevation) ? p.high_moon.disc_centre_elevation : NaN
   }
 }
 
@@ -575,6 +582,38 @@ function locationCommit(text, suggestions, selectedIndex) {
 
 // ---------------------------------------------------------------- view model
 
+// Sea-level pressure at `ms`, linear between the forecast steps around it;
+// null outside them.
+function pressureAt(steps, ms) {
+  for (var i = 0; i + 1 < steps.length; i++) {
+    var a = steps[i], b = steps[i + 1]
+    if (ms < a.ms || ms > b.ms) continue
+    var pa = a.instant.air_pressure_at_sea_level, pb = b.instant.air_pressure_at_sea_level
+    if (!isNum(pa) || !isNum(pb)) return null
+    return pa + (pb - pa) * (ms - a.ms) / (b.ms - a.ms)
+  }
+  return null
+}
+
+// Pressure now and its forecast change over the next 3 hours. The arrow is
+// flat under 1 hPa, and steep from 3 hPa.
+function buildPressure(forecast, nowMs, lang) {
+  var now = pressureAt(forecast.steps, nowMs)
+  if (now === null) return null
+  var later = pressureAt(forecast.steps, nowMs + 3 * HOUR_MS)
+  var change = later === null ? null : Math.round((later - now) * 10) / 10
+  var arrow = change === null ? "" : Math.abs(change) < 1 ? "\u2192"
+    : change > 0 ? (change >= 3 ? "\u2191" : "\u2197") : (change <= -3 ? "\u2193" : "\u2198")
+  var signed = change === null ? "" : change === 0 ? "\u00b10"
+    : (change > 0 ? "+" : "\u2212") + formatNumber(Math.abs(change), 1, lang)
+  return {
+    value: Math.round(now),
+    change: change,
+    arrow: arrow,
+    changeText: change === null ? "" : signed + " " + strings(lang).pressureNext
+  }
+}
+
 function buildCurrent(forecast, nowcast, nowMs, lang) {
   var step = nearestStep(forecast.steps, nowMs)
   if (!step) return null
@@ -622,6 +661,7 @@ function buildCurrent(forecast, nowcast, nowMs, lang) {
       arrow: windArrow(values.windDir)
     },
     humidity: isNum(values.humidity) ? Math.round(values.humidity) : null,
+    pressure: buildPressure(forecast, nowMs, lang),
     cloud: isNum(d.cloud_area_fraction) ? Math.round(d.cloud_area_fraction) : null,
     uv: isNum(d.ultraviolet_index_clear_sky) ? formatNumber(d.ultraviolet_index_clear_sky, 1, lang) : "",
     precip: {
@@ -857,8 +897,9 @@ function buildMoon(moon, nowMs, lang) {
     // Share of the disc that is lit: 0 % at new moon, 100 % at full.
     // Rounded down so "100 %" means actually full, not a day early.
     illumination: Math.floor((1 - Math.cos(phase * Math.PI / 180)) / 2 * 100 + 1e-9),
-    rise: isNum(moon.riseMs) ? localClock(moon.riseMs) : "",
-    set: isNum(moon.setMs) ? localClock(moon.setMs) : ""
+    // "högst 01:08 (37°)"; "" without high-moon data.
+    high: isNum(moon.highMs) && isNum(moon.highElevation)
+      ? strings(lang).moonHigh + " " + localClock(moon.highMs) + " (" + Math.round(moon.highElevation) + "°)" : ""
   }
 }
 
@@ -1420,6 +1461,8 @@ if (typeof module !== "undefined") {
     locationCommit: locationCommit,
     buildCurrent: buildCurrent,
     buildHourlyDays: buildHourlyDays,
+    pressureAt: pressureAt,
+    buildPressure: buildPressure,
     precipGlyph: precipGlyph,
     buildLongRange: buildLongRange,
     buildNowcast: buildNowcast,

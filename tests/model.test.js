@@ -139,7 +139,7 @@ test("moon phase glyphs (footer only)", () => {
 })
 
 test("moon illumination", () => {
-  const at = (deg) => M.buildView({ moon: { phaseDeg: deg, refMs: NOW, riseMs: NaN, setMs: NaN },
+  const at = (deg) => M.buildView({ moon: { phaseDeg: deg, refMs: NOW, highMs: NaN, highElevation: NaN },
                                     lang: "sv", nowMs: NOW }).moon.illumination
   assert.equal(at(0), 0)
   assert.equal(at(90), 50)
@@ -204,6 +204,27 @@ test("current conditions prefer a fresh nowcast", () => {
   const later = M.buildCurrent(alingsas, nc, at + 5 * 3600000, "en")
   const step = alingsas.steps.reduce((a, b) => Math.abs(b.ms - (at + 5 * 3600000)) < Math.abs(a.ms - (at + 5 * 3600000)) ? b : a)
   assert.equal(later.temp, Math.round(step.instant.air_temperature))
+})
+
+test("pressure: now and its forecast change over 3 hours", () => {
+  const step = (h, p) => ({ ms: h * 3600000, instant: { air_pressure_at_sea_level: p } })
+  const fc = { steps: [step(0, 1010), step(1, 1011), step(2, 1012), step(3, 1013), step(4, 1013.4)] }
+  assert.equal(M.pressureAt(fc.steps, 1.5 * 3600000), 1011.5)
+  assert.equal(M.pressureAt(fc.steps, 5 * 3600000), null)
+  // 1010.5 → 1013.2: rising, not yet steep.
+  assert.deepEqual(M.buildPressure(fc, 0.5 * 3600000, "sv"),
+    { value: 1011, change: 2.7, arrow: "\u2197", changeText: "+2,7 på 3 h" })
+  // Past the forecast's end there's no change to show.
+  assert.deepEqual(M.buildPressure(fc, 3 * 3600000, "en"), { value: 1013, change: null, arrow: "", changeText: "" })
+  const falling = { steps: [step(0, 1020), step(3, 1016.5)] }
+  assert.equal(M.buildPressure(falling, 0, "en").arrow, "\u2193")
+  assert.equal(M.buildPressure(falling, 0, "en").changeText, "\u22123.5 in 3 h")
+  const flat = { steps: [step(0, 1020), step(3, 1020.4)] }
+  assert.equal(M.buildPressure(flat, 0, "en").arrow, "\u2192")
+  assert.equal(M.buildPressure({ steps: [step(0, 1020), step(3, 1020)] }, 0, "sv").changeText, "\u00b10 på 3 h")
+  // From the fixture: a plausible sea-level pressure.
+  const p = M.buildCurrent(alingsas, null, NOW, "sv").pressure
+  assert.ok(p.value > 950 && p.value < 1060 && p.changeText !== "")
 })
 
 test("hourly days: 3 h steps, then 6 h steps past the hourly range", () => {
@@ -306,7 +327,10 @@ test("sun and moon", () => {
                              lang: "sv", nowMs: NOW, settings: {} })
   assert.deepEqual(view.sun, { rise: "07:03", set: "18:58" })
   assert.equal(view.moon.name, "Fullmåne")  // 171°, within ±22.5° of full
-  assert.equal(view.moon.rise, "18:31")
+  assert.equal(view.moon.high, "högst 01:08 (37°)")
+  const noHigh = Object.assign({}, moon, { highMs: NaN })
+  assert.equal(M.buildView({ moon: noHigh, lang: "en", nowMs: NOW }).moon.high, "")
+  assert.equal(M.buildView({ moon, lang: "en", nowMs: NOW }).moon.high, "highest 01:08 (37°)")
   assert.equal(view.moon.illumination, 99)  // 171°
 })
 

@@ -503,10 +503,20 @@ Panel {
                 }
               }
 
+              // Gaps shrink (24 down to 10) when wide values would otherwise
+              // run into the temperature.
               Row {
+                id: statsRow
                 anchors.right: parent.right
                 visible: root.view.ready
-                spacing: Style.space(28)
+                readonly property real available: heroRight.parent.width - heroRight.anchors.rightMargin
+                  - (heroLeft.x + heroLeft.width) - Style.space(16)
+                readonly property real columnsWidth: {
+                  var sum = 0
+                  for (var i = 0; i < children.length; i++) sum += children[i].implicitWidth
+                  return sum
+                }
+                spacing: Math.max(Style.space(10), Math.min(Style.space(24), Math.floor((available - columnsWidth) / 3)))
 
                 Repeater {
                   model: root.view.current ? [
@@ -514,7 +524,11 @@ Panel {
                     { label: root.t.wind, value: root.view.current.wind.speed === null ? "—"
                         : root.view.current.wind.speed + " m/s " + root.view.current.wind.dirLabel + " " + root.view.current.wind.arrow,
                       sub: root.view.current.wind.gust === null ? "" : "(" + root.t.gust + " " + root.view.current.wind.gust + ")" },
-                    { label: root.t.humidity, value: root.view.current.humidity === null ? "—" : root.view.current.humidity + "%", sub: "" }
+                    { label: root.t.humidity, value: root.view.current.humidity === null ? "—" : root.view.current.humidity + "%", sub: "" },
+                    { label: root.t.pressure, value: root.view.current.pressure === null ? "—"
+                        : root.view.current.pressure.value + " hPa " + root.view.current.pressure.arrow,
+                      sub: root.view.current.pressure && root.view.current.pressure.changeText !== ""
+                        ? "(" + root.view.current.pressure.changeText + ")" : "" }
                   ] : []
 
                   Column {
@@ -1033,7 +1047,7 @@ Panel {
                 visible: !!root.view.moon
                 textFormat: Text.PlainText
                 text: root.view.moon
-                  ? root.view.moon.icon + " " + root.view.moon.name + " " + root.view.moon.illumination + "%" + (root.view.moon.rise !== "" ? "    " + root.view.moon.rise : "")
+                  ? root.view.moon.icon + " " + root.view.moon.name + " " + root.view.moon.illumination + "%" + (root.view.moon.high !== "" ? "   " + root.view.moon.high : "")
                   : ""
                 color: root.fg
                 font.family: root.fontFamily

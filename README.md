@@ -8,14 +8,15 @@ the data behind yr.no.
   the actual moon phase.
 - **Panel:**
   - Current conditions: feels-like temperature, wind with direction and
-    gusts, humidity.
+    gusts, humidity, and air pressure with its trend over the next 3 hours.
   - A radar nowcast for the next two hours ("Regn om ca 20 min"). Nordic
     countries only; there it also keeps the bar's temperature at most about
     15 minutes old.
   - Hourly rows for three days, showing forecast uncertainty (`12°±2`,
     `0–0,3 mm`).
   - A 10-day overview with temperature bars.
-  - Sunrise and sunset, moon phase and moonrise.
+  - Sunrise and sunset, moon phase, and when the moon is highest and how
+    high.
 - **Radar map:** a side panel with a map in your theme's colours and
   yr.no's radar every 5 minutes for the last 1½ hours plus a 2-hour
   forecast. Zoomed out it shows the whole Nordic radar area; zoomed in it
