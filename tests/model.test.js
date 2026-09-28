@@ -589,9 +589,15 @@ test("radar frames: observations then nowcast, with the now marker", () => {
   assert.match(frames[0].runId, /^[0-9a-f]{32}$/)
   assert.notEqual(frames[nowIndex].runId, frames[nowIndex + 1].runId)
   assert.ok(frames.slice(nowIndex + 1).every((f) => f.runId === frames[nowIndex + 1].runId))
-  const a = M.radarTileFile({ z: 6, x: 1, y: 1 }, { timeMs: 5, runId: "run1" })
-  const b = M.radarTileFile({ z: 6, x: 1, y: 1 }, { timeMs: 5, runId: "run2" })
+  const a = M.radarTileFile({ z: 6, x: 1, y: 1 }, { timeMs: 5, runId: "run1", forecast: true })
+  const b = M.radarTileFile({ z: 6, x: 1, y: 1 }, { timeMs: 5, runId: "run2", forecast: true })
   assert.notEqual(a, b, "same time, different forecast runs → different cache files")
+  // An observation is the same image in every run: one cache file.
+  assert.equal(M.radarTileFile({ z: 6, x: 1, y: 1 }, { timeMs: 5, runId: "run1", forecast: false }),
+    M.radarTileFile({ z: 6, x: 1, y: 1 }, { timeMs: 5, runId: "run2", forecast: false }))
+  assert.equal(M.radarFrameFile(frames[0], "v"), M.radarFrameFile(Object.assign({}, frames[0], { runId: "other" }), "v"))
+  assert.notEqual(M.radarFrameFile(frames[nowIndex + 1], "v"),
+    M.radarFrameFile(Object.assign({}, frames[nowIndex + 1], { runId: "other" }), "v"))
   assert.equal(M.tileRunId("https://tiles.yr.no/api/precipitation-nowcast/01a0df3c-6d8e-71b9-8dd0-69864ef18745/202609261935/tiles/{z}/{x}/{y}.png"),
     "01a0df3c6d8e71b98dd069864ef18745")
   assert.equal(M.tileRunId("https://x/{z}/{x}/{y}.png"), "")
@@ -604,8 +610,9 @@ test("radar frames: observations then nowcast, with the now marker", () => {
 
 test("radar tile urls and cache names", () => {
   assert.equal(M.tileUrl("https://x/{z}/{x}/{y}.png", 6, 34, 19), "https://x/6/34/19.png")
-  assert.equal(M.radarTileFile({ z: 6, x: 34, y: 19 }, { timeMs: 123, runId: "abc" }), "r_abc_123_6_34_19.png")
-  assert.equal(M.radarTileFile({ z: 6, x: 34, y: 19 }, { timeMs: 123, runId: "" }), "r_123_6_34_19.png")
+  assert.equal(M.radarTileFile({ z: 6, x: 34, y: 19 }, { timeMs: 123, runId: "abc", forecast: true }), "r_abc_123_6_34_19.png")
+  assert.equal(M.radarTileFile({ z: 6, x: 34, y: 19 }, { timeMs: 123, runId: "abc", forecast: false }), "r_123_6_34_19.png")
+  assert.equal(M.radarTileFile({ z: 6, x: 34, y: 19 }, { timeMs: 123, runId: "", forecast: true }), "r_123_6_34_19.png")
   const dl = M.radarDownloads([{ z: 6, x: 3, y: 4 }, { z: 6, x: 5, y: 4 }],
     [{ timeMs: 1, template: "u/{z}/{x}/{y}" }, { timeMs: 2, template: "v/{z}/{x}/{y}" }])
   assert.equal(dl.length, 2 * 2)
@@ -678,13 +685,16 @@ test("Model.js is a shared, stateless QML library", () => {
   assert.doesNotMatch(source.replace(/\/\/.*$/gm, ""), /\bQt\.|\bQuickshell\b|\broot\./)
 })
 
-test("radar frame-list keys differ whenever any frame's run or time does", () => {
-  const f = (runId, timeMs) => ({ runId, timeMs })
-  const a = [f("obs1", 1), f("obs1", 2), f("now1", 3)]
+test("radar frame-list keys follow the frames' images", () => {
+  const obs = (runId, timeMs) => ({ runId, timeMs, forecast: false })
+  const fc = (runId, timeMs) => ({ runId, timeMs, forecast: true })
+  const a = [obs("obs1", 1), obs("obs1", 2), fc("now1", 3)]
   assert.equal(M.radarFramesKey(a), M.radarFramesKey(a.map((x) => ({ ...x }))))
-  // Same first and last frame, different run in the middle.
-  assert.notEqual(M.radarFramesKey(a), M.radarFramesKey([f("obs1", 1), f("obs2", 2), f("now1", 3)]))
-  assert.notEqual(M.radarFramesKey(a), M.radarFramesKey([f("obs1", 1), f("now1", 3)]))
+  // A new observation index alone changes nothing: same images.
+  assert.equal(M.radarFramesKey(a), M.radarFramesKey([obs("obs2", 1), obs("obs2", 2), fc("now1", 3)]))
+  // A new forecast run, or a frame more or less, does.
+  assert.notEqual(M.radarFramesKey(a), M.radarFramesKey([obs("obs1", 1), obs("obs1", 2), fc("now2", 3)]))
+  assert.notEqual(M.radarFramesKey(a), M.radarFramesKey([obs("obs1", 1), fc("now1", 3)]))
   assert.equal(M.radarFramesKey([]), "")
 })
 

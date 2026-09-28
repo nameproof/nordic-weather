@@ -30,6 +30,10 @@ on purpose: it also routes `omarchy.weather` commands and keybinds here.
 omarchy plugin add https://github.com/nameproof/nordic-weather.git --enable
 ```
 
+Remove it with `omarchy plugin remove io.github.nameproof.nordic-weather`.
+
+Needs `curl` and ImageMagick (for the radar), both included in Omarchy.
+
 ## Use
 
 | Action | Result |

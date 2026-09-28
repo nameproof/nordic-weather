@@ -1500,16 +1500,23 @@ function tileUrl(template, z, x, y) {
   return String(template).replace("{z}", z).replace("{x}", x).replace("{y}", y)
 }
 
-// Cache file name of a radar tile of a frame ({ timeMs, runId }).
+// Cache file name of a radar tile of a frame ({ timeMs, runId, forecast }).
 function radarTileFile(tile, frame) {
-  return "r_" + (frame.runId ? frame.runId + "_" : "") + frame.timeMs + "_" + tile.z + "_" + tile.x + "_" + tile.y + ".png"
+  return "r_" + radarFrameId(frame) + "_" + tile.z + "_" + tile.x + "_" + tile.y + ".png"
 }
 
-// Each forecast (and observation) run has its own id in the tile URL
-// (…/precipitation-nowcast/<run id>/<time>/tiles/…). The same valid time
-// differs between runs, so caches must be keyed by run as well as time,
-// or a loop stitches different forecasts together (visible as rain jumping
-// back and forth at the end of the animation).
+// What makes a frame's images unique. Every index update has its own run id
+// in the tile URL (…/<run id>/<time>/tiles/…). A forecast for the same time
+// differs between runs, so forecast frames are keyed by run and time (or a
+// loop would stitch different forecasts together, visible as rain jumping
+// back and forth). An observation is the same image in every run, so it is
+// keyed by time alone and stays cached across updates: only the newest
+// observation and the new forecast need fetching.
+function radarFrameId(frame) {
+  return (frame.forecast && frame.runId ? frame.runId + "_" : "") + frame.timeMs
+}
+
+// Each run's id, from a tile URL template.
 function tileRunId(template) {
   var m = /\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\//i.exec(String(template || ""))
   return m ? m[1].replace(/-/g, "").toLowerCase() : ""
@@ -1621,7 +1628,7 @@ function mapFrameLabel(frame, lang) {
 // share a key (runs are republished with new ids and times shift).
 function radarFramesKey(frames) {
   var parts = []
-  for (var i = 0; i < (frames || []).length; i++) parts.push(frames[i].runId + "@" + frames[i].timeMs)
+  for (var i = 0; i < (frames || []).length; i++) parts.push(radarFrameId(frames[i]))
   return parts.join(",")
 }
 
@@ -1648,7 +1655,7 @@ function mapViewKey(view, width, height) {
 }
 
 function radarFrameFile(frame, viewKey) {
-  return "f_" + (frame.runId ? frame.runId + "_" : "") + frame.timeMs + "_" + viewKey + ".png"
+  return "f_" + radarFrameId(frame) + "_" + viewKey + ".png"
 }
 
 // One argument per frame: "frameFile|tileFile:left:top|…" (the radar view's
@@ -1740,8 +1747,9 @@ function mapLabels(places, view, width, height, lang, charPx, markerName) {
   return out
 }
 
-// Fetch the tiles that aren't cached yet (12 at a time: HTTP/2 multiplexes
-// them over one connection, ≈110 tiles/s, 3× faster than 4), each via a temp
+// Fetch the tiles that aren't cached yet (24 at a time over HTTP/2: the
+// tiles are ~3 KB, so request latency limits, not bandwidth; 24 gives
+// ≈180–250 tiles/s, 12 ≈130–180, and 48 is slower again), each via a temp
 // file so a failed transfer never leaves a broken tile, and prune radar
 // tiles older than 2 h.
 // Prints "<fetched> <missing>": missing counts the tiles still not on disk
@@ -1756,7 +1764,7 @@ function tileDownloadCommand(dir, downloads) {
     + '  shift 2\n'
     + 'done\n'
     + 'if (( ${#parts[@]} )); then\n'
-    + '  curl -sS --fail --parallel --parallel-max 12 --max-time 60 -A "$ua" "${args[@]}" 2>/dev/null\n'
+    + '  curl -sS --fail --parallel --parallel-max 24 --max-time 60 -A "$ua" "${args[@]}" 2>/dev/null\n'
     + '  for f in "${parts[@]}"; do\n'
     + '    if [[ -s "$dir/$f.part" ]]; then mv -f "$dir/$f.part" "$dir/$f"; else rm -f "$dir/$f.part"; fi\n'
     + '  done\n'
@@ -1817,6 +1825,7 @@ if (typeof module !== "undefined") {
     viewTiles: viewTiles,
     tileUrl: tileUrl,
     radarTileFile: radarTileFile,
+    radarFrameId: radarFrameId,
     parseTileIndex: parseTileIndex,
     radarFrames: radarFrames,
     tileRunId: tileRunId,
