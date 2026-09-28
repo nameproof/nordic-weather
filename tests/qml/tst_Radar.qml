@@ -87,6 +87,24 @@ Item {
       compare(buffers.staging, null)
     }
 
+    // More of the same frames assembled: the same images carry on, nothing
+    // is staged or decoded again, and readiness never lapses.
+    function test_grown_loop_keeps_its_images() {
+      var partial = { key: "g|2", base: "g", viewKey: "test", nowIndex: 0, ready: 2,
+                      frames: [0, 1, 2, 3, 4].map(function(t) { return { timeMs: t } }) }
+      var buffers = makeImages(partial)
+      tryCompare(buffers, "ready", true)
+      var set = buffers.front, current = buffers.current
+      buffers.loop = Object.assign({}, partial, { key: "g|4", ready: 4 })
+      compare(buffers.front, set)
+      compare(buffers.current, current)
+      compare(buffers.staging, null)
+      compare(buffers.ready, true)
+      wait(50)
+      compare(buffers.front, set)
+      compare(buffers.staging, null)
+    }
+
     function test_single_preview_and_unload() {
       var buffers = makeImages(loop("preview", [4]))
       tryCompare(buffers, "ready", true)

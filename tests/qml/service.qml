@@ -7,8 +7,9 @@ Scope {
   property int stage: 0
   property double started: Date.now()
   property double since: Date.now()
-  property real savedPhase: 0
   property int savedFrame: 0
+  property int savedTick: 0
+  property var savedSet: null
 
   // Exercise the actual service, processes and worker without network
   // requests or changing the user's location/settings.
@@ -51,7 +52,7 @@ Scope {
   function step() {
     if (Date.now() - started > 15000) throw new Error("timeout at stage " + stage)
     if (stage === 0 && service.cacheLoaded) {
-      service.cache = { prefs: { radarSource: "yr", mapStep: 1 } }
+      service.cache = { prefs: { mapStep: 1 } }
       viewer(true)
       service.yrPending = loop("first", [0, 300000, 600000])
       check(service.publishYrLoop(false), "nothing on screen: publish at once")
@@ -73,11 +74,11 @@ Scope {
       // 10 min: the second loop carries on at 10 min or later, not at 5.
       check(service.yrCurrentFrame.timeMs >= 600000, "a new loop carries on at the same time")
       savedFrame = service.yrFrame
-      savedPhase = service.yrPhaseMs
+      savedTick = service.yrPlayhead.tick
       viewer(false)
       next()
     } else if (stage === 4 && Date.now() - since > 300) {
-      check(service.yrFrame === savedFrame && service.yrPhaseMs === savedPhase, "closed radar must not animate")
+      check(service.yrFrame === savedFrame && service.yrPlayhead.tick === savedTick, "closed radar must not animate")
       viewer(true)
       index([1200000, 1500000])
       next()
@@ -90,11 +91,14 @@ Scope {
       next()
     } else if (stage === 6 && service.yrShownValid && service.yrShown.partial && service.yrImagesReady) {
       check(service.yrPlayLimit === 1, "a partial loop plays what is assembled")
+      savedSet = images.front
+      savedTick = service.yrPlayhead.tick
       service.yrRadarDoneCount = 2
       service.maybeComposeYrFrames()
       next()
     } else if (stage === 7 && service.yrShownValid && !service.yrShown.partial && service.yrImagesReady) {
       check(service.yrShown.frames.length === 2 && service.yrPlayLimit === 2, "the complete loop replaces the partial one")
+      check(images.front === savedSet, "a loop that only grew keeps its images")
       index([1800000])
       next()
     } else if (stage === 8 && service.yrRetryCount === 1) {

@@ -142,10 +142,7 @@ Panel {
   readonly property string cacheDir: service ? service.cacheDir : ""
   readonly property string tilesDir: service ? service.tilesDir : ""
 
-  readonly property string radarSource: service ? service.radarSource : "met"
-  readonly property double radarFileTimeMs: service ? service.radarFileTimeMs : 0
-  readonly property bool metRadarActive: opened && radarOpen && radarSource === "met"
-  readonly property bool yrRadarActive: opened && radarOpen && radarSource === "yr" && !!service && service.yrRadarActive
+  readonly property bool yrRadarActive: opened && radarOpen && !!service && service.yrRadarActive
 
   readonly property int mapStep: service ? service.mapStep : Model.MAP_DEFAULT_STEP
   readonly property var mapViewState: yrRadarActive ? service.mapViewState : null
@@ -163,7 +160,6 @@ Panel {
 
   function refresh(force) { if (service) service.refresh(force) }
   function zoomMap(delta) { if (service) service.zoomMap(delta) }
-  function setRadarSource(source) { if (service) service.setRadarSource(source) }
   function togglePause() { if (service) service.togglePause() }
   function seekFrame(index) { if (service) service.seekFrame(index) }
   function stepFrame(delta) { if (service) service.stepFrame(delta) }
@@ -259,9 +255,10 @@ Panel {
   // Forecast column width; the radar side panel is added next to it.
   readonly property int forecastWidth: Style.space(540)
   readonly property int radarGap: Style.space(16)
-  // MET's GIF is 659×761; shown 1:1 when it fits so its labels stay sharp.
-  readonly property int radarNativeWidth: 659
-  readonly property int radarNativeHeight: 761
+  // The radar map's size (Nordic proportions), smaller when the panel
+  // doesn't fit it.
+  readonly property int radarMapWidth: 659
+  readonly property int radarMapHeight: 761
 
   // Column widths for the hourly table, shared by every row.
   readonly property int colHour: Style.space(26)
@@ -291,7 +288,7 @@ Panel {
     open: root.opened
     centerOnBar: true
     focusTarget: keyCatcher
-    contentWidth: panel.fittedContentWidth(root.forecastWidth + (root.radarOpen ? root.radarGap + root.radarNativeWidth : 0))
+    contentWidth: panel.fittedContentWidth(root.forecastWidth + (root.radarOpen ? root.radarGap + root.radarMapWidth : 0))
     contentHeight: panel.fittedContentHeight(Math.max(weatherColumn.implicitHeight, root.radarOpen ? radarPane.implicitHeight : 0))
 
     PanelKeyCatcher {
@@ -1043,8 +1040,8 @@ Panel {
         }
       }
 
-      // ---- Radar side panel: MET's Nordic radar GIF or the yr.no-style map,
-      //      switched at the bottom. Each view is only created while shown.
+      // ---- Radar side panel: yr.no's radar on our own map of the Nordics,
+      //      only created while shown.
       Column {
         id: radarPane
         visible: root.radarOpen
@@ -1054,36 +1051,19 @@ Panel {
         width: Math.max(0, parent.width - weatherScroll.width - root.radarGap)
         spacing: Style.space(8)
 
-        readonly property real imageScale: Math.min(1, width / root.radarNativeWidth)
+        readonly property real mapScale: Math.min(1, width / root.radarMapWidth)
 
         Rectangle {
           id: radarBox
-          width: Math.round(root.radarNativeWidth * radarPane.imageScale) + 2
-          height: Math.round(root.radarNativeHeight * radarPane.imageScale) + 2
+          width: Math.round(root.radarMapWidth * radarPane.mapScale) + 2
+          height: Math.round(root.radarMapHeight * radarPane.mapScale) + 2
           radius: Style.cornerRadius
           color: "transparent"
           border.width: 1
           border.color: Qt.rgba(root.fg.r, root.fg.g, root.fg.b, 0.2)
           clip: true
 
-          // MET: decode GIF frames on the fly (≈2 MB) instead of caching all 19 (≈38 MB).
-          Loader {
-            id: radarLoader
-            anchors.fill: parent
-            anchors.margins: 1
-            active: root.metRadarActive && root.radarFileTimeMs > 0
-            sourceComponent: AnimatedImage {
-              cache: false
-              asynchronous: true
-              playing: visible
-              smooth: radarPane.imageScale < 1
-              fillMode: Image.PreserveAspectFit
-              // The query changes per radar time so a new GIF is re-read.
-              source: "file://" + root.cacheDir + "/radar.gif?t=" + root.radarFileTimeMs
-            }
-          }
-
-          // yr.no: base map and radar tiles, each recoloured by a shader.
+          // Base map and radar frames, each recoloured by a shader.
           Loader {
             id: yrMapLoader
             anchors.fill: parent
@@ -1092,11 +1072,12 @@ Panel {
             sourceComponent: yrMapComponent
           }
 
+          // The map needs a place to centre on.
           Text {
             anchors.centerIn: parent
-            visible: root.radarSource === "met" && radarLoader.status !== Loader.Ready
+            visible: !root.hasLocation
             textFormat: Text.PlainText
-            text: root.t.radarLoading
+            text: root.t.noLocation
             color: root.dim
             font.family: root.fontFamily
             font.pixelSize: Style.font.bodySmall
@@ -1113,13 +1094,9 @@ Panel {
             anchors.left: parent.left
             anchors.leftMargin: Style.space(4)
             textFormat: Text.PlainText
-            // Local time of the frame on screen (MET's GIF stamp is UTC).
-            text: root.radarSource === "yr"
-              ? Model.mapFrameLabel(root.yrCurrentFrame, root.lang) + (root.yrPaused ? "  ⏸" : "")
-              : (radarLoader.item && radarLoader.item.frameCount > 0
-                ? Model.radarFrameLabel(root.radarFileTimeMs, radarLoader.item.frameCount, radarLoader.item.currentFrame)
-                : "")
-            color: root.yrCurrentFrame && root.yrCurrentFrame.forecast && root.radarSource === "yr" ? Color.accent : root.fg
+            // Local time of the frame on screen.
+            text: Model.mapFrameLabel(root.yrCurrentFrame, root.lang) + (root.yrPaused ? "  ⏸" : "")
+            color: root.yrCurrentFrame && root.yrCurrentFrame.forecast ? Color.accent : root.fg
             font.family: root.fontFamily
             font.pixelSize: Style.font.body
           }
@@ -1131,50 +1108,10 @@ Panel {
             // Only a status: while a zoom level's radar tiles are still
             // downloading (the first visit fetches several hundred). Credits
             // live in the panel footer.
-            text: root.radarSource === "yr" && root.yrRadarActive && !root.yrPlaying ? root.t.radarLoading : ""
+            text: root.yrRadarActive && !root.yrPlaying ? root.t.radarLoading : ""
             color: root.faint
             font.family: root.fontFamily
             font.pixelSize: Style.font.caption
-          }
-        }
-
-        // Source toggle.
-        Row {
-          anchors.horizontalCenter: parent.horizontalCenter
-          spacing: 0
-
-          Repeater {
-            model: [{ id: "met", label: "MET" }, { id: "yr", label: "yr.no" }]
-
-            Rectangle {
-              required property var modelData
-              required property int index
-              readonly property bool selected: root.radarSource === modelData.id
-              width: sourceLabel.implicitWidth + Style.space(24)
-              height: sourceLabel.implicitHeight + Style.space(8)
-              radius: Style.cornerRadius
-              color: selected ? Style.hoverFillFor(root.fg, Color.accent)
-                : (sourceArea.containsMouse ? Qt.rgba(root.fg.r, root.fg.g, root.fg.b, 0.06) : "transparent")
-              border.width: 1
-              border.color: Qt.rgba(root.fg.r, root.fg.g, root.fg.b, selected ? 0.35 : 0.15)
-
-              Text {
-                id: sourceLabel
-                anchors.centerIn: parent
-                textFormat: Text.PlainText
-                text: modelData.label
-                color: selected ? root.fg : root.dim
-                font.family: root.fontFamily
-                font.pixelSize: Style.font.bodySmall
-              }
-              MouseArea {
-                id: sourceArea
-                anchors.fill: parent
-                hoverEnabled: true
-                cursorShape: Qt.PointingHandCursor
-                onClicked: root.setRadarSource(modelData.id)
-              }
-            }
           }
         }
       }

@@ -360,44 +360,6 @@ test("location file and geocoding", () => {
   assert.equal(M.locationCommit("x", [], 0), null)
 })
 
-test("radar index and frame labels", () => {
-  const index = M.parseRadarIndex(fixture("radar-index.json"))
-  assert.equal(index.timeMs, Date.parse("2026-09-26T16:20:00Z"))
-  assert.equal(M.parseRadarIndex("[]"), null)
-  assert.equal(M.parseRadarIndex("nope"), null)
-  // 19 frames, newest 16:20 UTC = 18:20 local; oldest 13:20 UTC = 15:20 local.
-  assert.equal(M.radarFrameLabel(index.timeMs, 19, 18), "18:20")
-  assert.equal(M.radarFrameLabel(index.timeMs, 19, 0), "15:20")
-  assert.equal(M.radarFrameLabel(index.timeMs, 19, 1), "15:30")
-  assert.equal(M.radarFrameLabel(NaN, 19, 0), "")
-})
-
-test("radar download writes via a temp file and only keeps HTTP 200", () => {
-  const { execFileSync } = require("node:child_process")
-  const os = require("node:os")
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "met-radar-"))
-  const bin = fs.mkdtempSync(path.join(os.tmpdir(), "met-fakecurl-"))
-  // Fake curl: writes a body to -o and headers to stdout with the given status.
-  const fake = (status) => fs.writeFileSync(path.join(bin, "curl"),
-    `#!/bin/bash\nwhile [[ $# -gt 0 ]]; do case $1 in -o) out=$2; shift 2;; *) shift;; esac; done\n` +
-    `printf 'GIF89a-new' > "$out"\nprintf 'HTTP/2 ${status} \\r\\nexpires: x\\r\\n\\r\\n'\n`, { mode: 0o755 })
-  const run = () => {
-    const cmd = M.radarDownloadCommand(dir, "https://example/x")
-    return execFileSync(cmd[0], cmd.slice(1), { env: { ...process.env, PATH: bin + ":" + process.env.PATH } }).toString()
-  }
-  fs.writeFileSync(path.join(dir, "radar.gif"), "GIF89a-old")
-  fake(500)
-  assert.equal(M.parseHttpResponse(run()).status, 500)
-  assert.equal(fs.readFileSync(path.join(dir, "radar.gif"), "utf8"), "GIF89a-old")
-  fake(200)
-  assert.equal(M.parseHttpResponse(run()).status, 200)
-  assert.equal(fs.readFileSync(path.join(dir, "radar.gif"), "utf8"), "GIF89a-new")
-  assert.ok(!fs.existsSync(path.join(dir, "radar.gif.part")))
-  // Default URL: the "latest" animation, without a time parameter (MET rejects it).
-  assert.equal(M.radarDownloadCommand(dir)[4], M.RADAR_ANIMATION_URL)
-  assert.ok(!M.RADAR_ANIMATION_URL.includes("time="))
-})
-
 test("tile maths matches the Web Mercator scheme", () => {
   const t = M.worldTile(57.9303, 12.5335, 6)
   assert.ok(Math.abs(t.x - 34.228) < 0.001 && Math.abs(t.y - 19.2995) < 0.001)
@@ -649,37 +611,19 @@ test("radar: rotating slots retain decoded endpoints across advancement and wrap
   assert.deepEqual(M.radarImageSlots([], 0, 0).frames, [null, null, null])
 })
 
-test("radar: delayed callbacks preserve elapsed position; suspend and clock jumps reanchor", () => {
-  let position = { frame: 0, tick: 0, phaseMs: 0 }
-  let total = 0
-  for (const dt of [85, 84, 92, 80, 82, 89, 91, 80, 81, 110, 350]) {
-    total += dt
-    position = M.radarAdvance(position.frame, position.tick, position.phaseMs, dt, 4)
-    assert.equal(position.frame, Math.floor(total / 250) % 4)
-    assert.equal(position.tick, Math.floor(total / 250))
-    assert.equal(position.phaseMs, total % 250)
-  }
-  for (const dt of [-10000, 30000, NaN])
-    assert.deepEqual(M.radarAdvance(position.frame, position.tick, position.phaseMs, dt, 4), position)
-  assert.deepEqual(M.radarAdvance(0, 0, 0, 1000, 1), { frame: 0, tick: 0, phaseMs: 0 })
-})
-
-test("radar: a loop still loading plays what is assembled, then waits on its newest frame", () => {
+test("radar: one frame per tick, wrapping, and waiting on the newest frame while loading", () => {
   const frames = Array.from({ length: 10 }, (_, i) => ({ timeMs: i * 300000 }))
   // Six of ten assembled: slots stay within them, wrapping inside the prefix.
   const slots = M.radarImageSlots(frames, 5, 5, 6)
   assert.ok(slots.frames.every((f) => f === null || f.timeMs < 6 * 300000))
   assert.equal(slots.frames[slots.current], frames[5])
-  // Playback reaches frame 5 and holds there, phase 0, however long it waits.
-  let p = { frame: 3, tick: 3, phaseMs: 200 }
-  p = M.radarAdvance(p.frame, p.tick, p.phaseMs, 100, 10, 6)
-  assert.deepEqual(p, { frame: 4, tick: 4, phaseMs: 50 })
-  p = M.radarAdvance(p.frame, p.tick, p.phaseMs, 450, 10, 6)
-  assert.deepEqual(p, { frame: 5, tick: 5, phaseMs: 0 })
-  assert.deepEqual(M.radarAdvance(5, 5, 0, 400, 10, 6), { frame: 5, tick: 5, phaseMs: 0 })
-  // More frames arrive: it carries on. A complete loop wraps to the start.
-  assert.deepEqual(M.radarAdvance(5, 5, 0, 260, 10, 12), { frame: 6, tick: 6, phaseMs: 10 })
-  assert.deepEqual(M.radarAdvance(9, 9, 0, 260, 10, 10), { frame: 0, tick: 10, phaseMs: 10 })
+  assert.deepEqual(M.radarStep(3, 3, 10, 6), { frame: 4, tick: 4 })
+  assert.deepEqual(M.radarStep(5, 5, 10, 6), { frame: 5, tick: 5 })     // newest assembled: wait
+  assert.deepEqual(M.radarStep(5, 5, 10, 8), { frame: 6, tick: 6 })     // more arrived: on
+  assert.deepEqual(M.radarStep(9, 9, 10, 10), { frame: 0, tick: 10 })   // complete: wrap
+  assert.deepEqual(M.radarStep(9, 9, 10), { frame: 0, tick: 10 })
+  assert.deepEqual(M.radarStep(7, 7, 5, 5), { frame: 0, tick: 8 })      // from a longer loop
+  assert.deepEqual(M.radarStep(0, 2, 1), { frame: 0, tick: 2 })         // a single frame
 })
 
 test("radar: a replacement loop carries on at the same time", () => {

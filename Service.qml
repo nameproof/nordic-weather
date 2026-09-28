@@ -91,9 +91,8 @@ Scope {
   property var location: ({ name: "", latitude: null, longitude: null })
   readonly property bool hasLocation: Model.hasCoordinates(location)
 
-  // { forecast, nowcast, sun, moon, radar, radarFile, yrObs, yrNow: cache
-  //   entries (see Model.isFresh), elevations: { "lat,lon": metres },
-  //   prefs: { radarSource, mapStep } }
+  // { forecast, nowcast, sun, moon, yrObs, yrNow: cache entries (see
+  //   Model.isFresh), elevations: { "lat,lon": metres }, prefs: { mapStep } }
   property var cache: ({})
   property bool cacheLoaded: false
 
@@ -206,8 +205,8 @@ Scope {
     // request on every tick.
     if (kind === "nowcast")
       return now >= Math.max(entry.expiresMs, entry.fetchedMs + (anyOpen ? 2 * 60000 : Model.NOWCAST_BACKGROUND_MS))
-    // Radar indexes: only polled while that radar is on screen.
-    if (kind === "radar" || kind === "yrObs" || kind === "yrNow")
+    // Radar indexes: only polled while the radar is on screen.
+    if (kind === "yrObs" || kind === "yrNow")
       return now >= Math.max(entry.expiresMs, entry.fetchedMs + 2 * 60000)
     return now >= Math.max(entry.expiresMs + refreshJitterMs, entry.fetchedMs + 5 * 60000)
   }
@@ -225,10 +224,6 @@ Scope {
     // A cached 422 (outside radar coverage) has an empty body; forcing won't change that.
     var nowcastCovered = !cache.nowcast || cache.nowcast.key !== urls.nowcast || cache.nowcast.body !== ""
     startFetch(nowcastProc, "nowcast", urls.nowcast, (force && nowcastCovered) || isDue("nowcast", urls.nowcast, now))
-    if (metRadarActive) {
-      startFetch(radarIndexProc, "radar", Model.RADAR_INDEX_URL, force || isDue("radar", Model.RADAR_INDEX_URL, now))
-      maybeDownloadRadar()
-    }
     if (yrRadarActive) {
       startFetch(yrObsProc, "yrObs", Model.YR_RADAR_OBS_INDEX, force || isDue("yrObs", Model.YR_RADAR_OBS_INDEX, now))
       startFetch(yrNowProc, "yrNow", Model.YR_RADAR_NOWCAST_INDEX, force || isDue("yrNow", Model.YR_RADAR_NOWCAST_INDEX, now))
@@ -279,7 +274,7 @@ Scope {
         recordFailure(kind, url, "unreadable response")
       } else {
         var fallbackTtl = kind === "yrObs" || kind === "yrNow" ? 60000
-          : kind === "nowcast" || kind === "radar" ? 5 * 60000 : kind === "forecast" ? 30 * 60000 : 24 * 3600000
+          : kind === "nowcast" ? 5 * 60000 : kind === "forecast" ? 30 * 60000 : 24 * 3600000
         setCacheEntry(kind, Model.cacheEntryFromResponse(cache[kind], url, response, now, fallbackTtl))
         var cleared = Object.assign({}, failures)
         delete cleared[kind]
@@ -406,43 +401,16 @@ Scope {
     Util.execArgv(argv)
   }
 
-  // ---------------------------------------------------------------- radar: common
+  // ---------------------------------------------------------------- radar
 
-  // Which radar the side panel shows: MET's GIF or the yr.no-style map
-  // (toggle at the bottom of the side panel, remembered in the cache file).
-  readonly property string radarSource: cache.prefs && cache.prefs.radarSource === "yr" ? "yr" : "met"
-  readonly property bool metRadarActive: radarViewer !== null && radarSource === "met"
-  readonly property bool yrRadarActive: radarViewer !== null && radarSource === "yr" && hasLocation
-  onRadarSourceChanged: maybeFetch(false)
-  onMetRadarActiveChanged: if (metRadarActive) maybeFetch(false)
+  // The radar side panel: yr.no's radar frames on our own base map. Only
+  // downloaded and animated while some panel shows it.
+  readonly property bool yrRadarActive: radarViewer !== null && hasLocation
   onYrRadarActiveChanged: if (yrRadarActive) {
     yrPlayhead = { frame: 0, tick: yrPlayhead.tick }
-    yrPhaseMs = 0
     yrPaused = false
     maybeFetch(false)
     Qt.callLater(maybeComposeYrFrames)
-  }
-
-  function setRadarSource(source) {
-    if (source === "met" || source === "yr") setPref("radarSource", source)
-  }
-
-  // ---------------------------------------------------------------- radar: MET GIF
-
-  property bool radarDownloading: false
-  readonly property var radarIndex: cache.radar ? Model.parseRadarIndex(cache.radar.body) : null
-  // Newest frame time of the GIF on disk (cache.radarFile.timeMs).
-  readonly property double radarFileTimeMs: cache.radarFile && typeof cache.radarFile.timeMs === "number" ? cache.radarFile.timeMs : 0
-  onRadarIndexChanged: maybeDownloadRadar()
-
-  function maybeDownloadRadar() {
-    var index = radarIndex
-    if (!index || radarDownloading || !metRadarActive) return
-    if (index.timeMs === radarFileTimeMs) return
-    radarDownloading = true
-    radarDownloadProc.timeMs = index.timeMs
-    radarDownloadProc.command = Model.radarDownloadCommand(cacheDir)
-    radarDownloadProc.running = true
   }
 
   // ---------------------------------------------------------------- radar: yr.no map
@@ -497,7 +465,6 @@ Scope {
 
   function togglePause() {
     yrPaused = !yrPaused
-    yrClockMs = Date.now()
   }
 
   // Scrubbing (the ruler on the map, or , and .): show a frame and pause.
@@ -506,7 +473,6 @@ Scope {
     var n = Math.min(yrDisplay.frames.length, yrPlayLimit)
     if (n <= 0) return
     yrPlayhead = { frame: Math.max(0, Math.min(n - 1, index)), tick: yrPlayhead.tick }
-    yrPhaseMs = 0
     yrPaused = true
   }
 
@@ -514,12 +480,10 @@ Scope {
     seekFrame(Math.min(yrFrame, yrDisplay.frames.length - 1) + delta)
   }
 
-  // Time into the current frame, and when the clock last ticked.
-  property real yrPhaseMs: 0
-  property double yrClockMs: 0
   // The panel reports when the images for this exact loop and frame are
-  // decoded; until then playback holds rather than skipping a frame.
-  readonly property string yrPresentationToken: (yrShownValid ? yrShown.key : "") + "|" + yrPlayhead.frame + "|" + yrPlayhead.tick
+  // decoded; until then playback holds rather than skipping a frame. A loop
+  // that only grew (more of the same frames assembled) keeps its token.
+  readonly property string yrPresentationToken: (yrShownValid ? loopBase(yrShown) : "") + "|" + yrPlayhead.frame + "|" + yrPlayhead.tick
   property string yrReadyToken: ""
   property bool yrReadyImages: false
   readonly property bool yrImagesReady: yrReadyToken === yrPresentationToken && yrReadyImages
@@ -585,19 +549,19 @@ Scope {
     // A complete loop on screen changes only at a frame boundary; a partial
     // one at once, since it may be waiting on its newest frame.
     if (yrShownValid && !yrShown.partial && yrShown.frames.length > 1 && !boundary) return false
-    // The same frames, more of them assembled: carry on. New
-    // data: carry on at the same time, not back at the start.
+    // The same frames, more of them assembled: nothing on screen changes,
+    // playback just has more to go on. New data: carry on at the same
+    // time, not back at the start.
+    var grown = yrShownValid && loopBase(yrShown) === loopBase(loop)
     var frame = 0
     if (yrShownValid) {
       var at = Math.min(nextFrame === undefined ? yrFrame : nextFrame, yrShown.frames.length - 1)
-      frame = loopBase(yrShown) === loopBase(loop) ? at : Model.radarFrameAt(loop.frames, yrShown.frames[at].timeMs)
+      frame = grown ? at : Model.radarFrameAt(loop.frames, yrShown.frames[at].timeMs)
       frame = Math.min(frame, loopReady(loop) - 1)
     }
-    yrPhaseMs = 0
     yrShown = loop
     yrPending = null
-    yrPlayhead = { frame: frame, tick: yrPlayhead.tick + 1 }
-    yrClockMs = Date.now()
+    if (!grown || frame !== yrFrame) yrPlayhead = { frame: frame, tick: yrPlayhead.tick + 1 }
     return true
   }
 
@@ -628,7 +592,7 @@ Scope {
     var rv = Model.radarView(mapViewState)
     yrFramesProc.key = key
     yrFramesProc.preview = preview
-    yrFramesProc.loop = { frames: frames, ready: ready, partial: !preview && ready < n, base: yrFramesKey,
+    yrFramesProc.loop = { frames: frames, ready: ready, partial: !preview && ready < n, base: preview ? key : yrFramesKey, radarKey: yrRadarKey,
                          nowIndex: preview ? 0 : yrRadar.nowIndex, viewKey: yrViewKey, key: key }
     yrFramesProc.command = Model.frameComposeCommand(tilesDir, yrMapWidth, yrMapHeight, rv.px,
       Model.frameComposeSpecs(yrRadarTiles, frames.slice(0, ready), yrViewKey))
@@ -688,7 +652,6 @@ Scope {
     function radar(): void { root.openPanelWith("radar") }
     function refresh(): void { root.refresh(true) }
     function mapZoom(step: int): void { root.setMapStep(step) }
-    function setRadarSource(source: string): void { root.setRadarSource(source) }
     // For scripts: "Alingsås · Klart 12° · Vind 2 m/s S · …" and "12°".
     function summary(): string { return Model.summaryText(root.view) }
     function temperature(): string {
@@ -771,7 +734,6 @@ Scope {
   FetchProcess { id: nowcastProc; kind: "nowcast" }
   FetchProcess { id: sunProc; kind: "sun" }
   FetchProcess { id: moonProc; kind: "moon" }
-  FetchProcess { id: radarIndexProc; kind: "radar" }
   FetchProcess { id: yrObsProc; kind: "yrObs" }
   FetchProcess { id: yrNowProc; kind: "yrNow" }
 
@@ -833,7 +795,7 @@ Scope {
             root.publishYrLoop(false)
           }
         }
-      } else if (loop.base === root.yrRadarKey) {
+      } else if (loop.radarKey === root.yrRadarKey) {
         // A tile went missing after its batch was counted: check the
         // downloads again (only missing tiles are fetched) after a delay.
         root.yrRadarDoneKey = ""
@@ -844,20 +806,6 @@ Scope {
     }
     // The view may have changed while this ran.
     onIdle: root.maybeComposeYrFrames()
-  }
-
-  Process {
-    id: radarDownloadProc
-    property double timeMs: 0
-    stdout: StdioCollector {
-      waitForEnd: true
-      onStreamFinished: {
-        var response = Model.parseHttpResponse(text)
-        console.log("nordic-weather: radar image HTTP " + (response.status || "failed"))
-        if (response.status === 200) root.setCacheEntry("radarFile", { timeMs: radarDownloadProc.timeMs })
-        root.radarDownloading = false
-      }
-    }
   }
 
   Process {
@@ -894,30 +842,19 @@ Scope {
     }
   }
 
-  // The radar animation (one frame counter for every panel): a new frame
-  // every 250 ms of elapsed time, so a late tick doesn't slow the loop. A
-  // late decode holds the frame instead of skipping one. Readiness lapses
-  // briefly at every step (until the panel reports the new frame), so the
-  // timer keeps running and a tick while not ready holds time.
+  // The radar animation (one frame counter for every panel): one frame per
+  // tick, 250 ms each. A frame whose images are still decoding holds
+  // instead of being skipped.
   Timer {
     interval: 250
     repeat: true
     running: root.yrRadarActive && root.yrPlaying && !root.yrPaused
-    onRunningChanged: root.yrClockMs = Date.now()
     onTriggered: {
-      var now = Date.now()
-      if (!root.yrImagesReady) {
-        root.yrClockMs = now
-        return
-      }
-      var next = Model.radarAdvance(root.yrFrame, root.yrPlayhead.tick, root.yrPhaseMs,
-                                    now - root.yrClockMs, root.yrShown.frames.length, root.yrPlayLimit)
-      root.yrClockMs = now
-      if (next.tick !== root.yrPlayhead.tick) {
-        if (root.publishYrLoop(true, next.frame)) return
-        root.yrPlayhead = { frame: next.frame, tick: next.tick }
-      }
-      root.yrPhaseMs = next.phaseMs
+      if (!root.yrImagesReady) return
+      var next = Model.radarStep(root.yrFrame, root.yrPlayhead.tick, root.yrShown.frames.length, root.yrPlayLimit)
+      if (next.tick === root.yrPlayhead.tick) return
+      if (root.publishYrLoop(true, next.frame)) return
+      root.yrPlayhead = next
     }
   }
 }

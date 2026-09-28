@@ -5,7 +5,8 @@ import "Model.js" as Model
 // Texture providers only: the panel's radar shader draws these Images.
 // Three rotating slots decode frames ahead of playback. A replacement loop
 // gets its own short-lived staging set; the old set stays on screen until
-// the new one's frames are decoded.
+// the new one's frames are decoded. A loop that only grew (more of the
+// same frames assembled, `base` unchanged) keeps its images.
 Item {
   id: root
   visible: false
@@ -16,7 +17,10 @@ Item {
   property string token: ""
   property var front: null
   property var staging: null
-  readonly property string snapshotKey: loop ? loop.key : ""
+  readonly property string snapshotKey: keyOf(loop)
+
+  // Which frames a loop is: a loop that only grew keeps its base.
+  function keyOf(l) { return l ? (l.base || l.key) : "" }
 
   readonly property bool ready: front !== null && front.snapshotKey === snapshotKey && front.imagesReady
     && front.playhead.frame === playhead.frame && front.playhead.tick === playhead.tick
@@ -30,7 +34,13 @@ Item {
   function report() { prepared(token, ready) }
   onTokenChanged: Qt.callLater(report)
   onReadyChanged: Qt.callLater(report)
-  onLoopChanged: Qt.callLater(synchronize)
+  // keyOf(loop), not snapshotKey: that binding may not have caught up yet.
+  onLoopChanged: {
+    var key = keyOf(loop)
+    if (front && front.snapshotKey === key) front.loop = loop
+    if (staging && staging.snapshotKey === key) staging.loop = loop
+    Qt.callLater(synchronize)
+  }
   // A step reaches the drawing at once, in the same update as the ruler and
   // the time label.
   onPlayheadChanged: {
@@ -50,6 +60,7 @@ Item {
     }
     if (front && front.snapshotKey === snapshotKey) {
       if (staging) { staging.destroy(); staging = null }
+      front.loop = loop
       front.playhead = playhead
     } else {
       if (staging && staging.snapshotKey !== snapshotKey) { staging.destroy(); staging = null }

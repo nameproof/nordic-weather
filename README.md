@@ -16,16 +16,14 @@ the data behind yr.no.
     `0–0,3 mm`).
   - A 10-day overview with temperature bars.
   - Sunrise and sunset, moon phase and moonrise.
-- **Radar map:** a side panel with two views, switched at its bottom:
-  - **MET:** MET's animated Nordic radar GIF (last 3 hours, labelled in local time).
-  - **yr.no:** a map in your theme's colours with yr.no's radar every 5
-    minutes for the last 1½ hours plus a 2-hour forecast. Zoomed out it shows
-    the whole Nordic radar area; zoomed in it follows your location but never
-    leaves the radar's coverage, and areas without radar are dimmed. Zoom
-    with + / − or the mouse wheel; click the map to pause. The
-    base map ships with the plugin (see below); only the radar tiles come
-    from yr.no's undocumented tile server, so that part may break if yr.no
-    changes it.
+- **Radar map:** a side panel with a map in your theme's colours and
+  yr.no's radar every 5 minutes for the last 1½ hours plus a 2-hour
+  forecast. Zoomed out it shows the whole Nordic radar area; zoomed in it
+  follows your location but never leaves the radar's coverage, and areas
+  without radar are dimmed. Zoom with + / − or the mouse wheel; click the
+  map to pause. The base map ships with the plugin (see below); only the
+  radar tiles come from yr.no's undocumented tile server, so that part may
+  break if yr.no changes it.
 
   Nothing is downloaded or drawn until the side panel is open.
 - **Location:** click the place name and search. The location is saved in the
@@ -51,7 +49,6 @@ omarchy plugin add https://github.com/nameproof/omarchy-nordic-weather.git --ena
 | Click the place name, or Enter in the panel | Search for a location |
 | Click **Radar ›**, or → / `l` in the panel (← / `h` closes) | Show the radar map beside the forecast |
 | `omarchy-shell omarchy.weather toggle` / `edit` / `refresh` / `radar` | The same, from a keybind |
-| `omarchy-shell omarchy.weather setRadarSource met` / `yr` | Pick the radar view |
 
 Settings live on the widget's entry in `~/.config/omarchy/shell.json`:
 

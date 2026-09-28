@@ -913,52 +913,6 @@ function buildView(input) {
 
 // ---------------------------------------------------------------- radar map
 
-// MET's Nordic radar animation: a 659×761 GIF, one frame per 10 minutes for
-// the last 3 hours. The small index names the newest frame time, and the GIF
-// is downloaded again only when that time changes. The index lists a
-// time-specific animation URI, but the API rejects `time` for animations
-// (HTTP 400), so the "latest" URL is fetched right after reading the index;
-// if MET publishes in between, the next index poll catches it.
-var RADAR_FRAME_MS = 10 * 60000
-var RADAR_INDEX_URL = MET_BASE + "/radar/2.0/available.json?area=nordic&type=reflectivity&content=animation"
-var RADAR_ANIMATION_URL = MET_BASE + "/radar/2.0/?area=nordic&type=reflectivity&content=animation"
-
-// Index body → { timeMs } of the newest animation, or null.
-function parseRadarIndex(text) {
-  var data = parseJson(text)
-  if (!Array.isArray(data)) return null
-  var best = null
-  for (var i = 0; i < data.length; i++) {
-    var entry = data[i]
-    var ms = entry && entry.params ? parseIsoMs(entry.params.time) : NaN
-    if (!isNum(ms)) continue
-    if (!best || ms > best.timeMs) best = { timeMs: ms }
-  }
-  return best
-}
-
-// Local wall-clock time of frame `index` (0 = oldest) in an animation whose
-// newest frame is at newestMs.
-function radarFrameLabel(newestMs, frameCount, index) {
-  if (!isNum(newestMs) || !(frameCount > 0)) return ""
-  var i = Math.max(0, Math.min(frameCount - 1, index || 0))
-  return localClock(newestMs - (frameCount - 1 - i) * RADAR_FRAME_MS)
-}
-
-// Download into a temp file and rename into place only on HTTP 200, so the
-// GIF being shown is never truncated (the open file keeps its old inode).
-// Prints the response headers for parseHttpResponse, like curlCommand.
-function radarDownloadCommand(dir, uri) {
-  var script = 'part="$2/radar.gif.part"\n'
-    + 'hdr=$(curl -sS --max-time 30 -A "$3" -D - -o "$part" "$1") || { rm -f "$part"; exit 1; }\n'
-    + 'case "$(printf "%s" "$hdr" | head -n1)" in\n'
-    + '  *" 200"*) mv -f "$part" "$2/radar.gif" ;;\n'
-    + '  *) rm -f "$part" ;;\n'
-    + 'esac\n'
-    + 'printf "%s" "$hdr"\n'
-  return ["bash", "-c", script, "bash", uri || RADAR_ANIMATION_URL, dir, USER_AGENT]
-}
-
 // ---------------------------------------------------------------- yr.no radar map
 
 // A radar map like yr.no's: our own base map (tiles rendered from
@@ -1156,21 +1110,16 @@ function radarImageSlots(frames, frame, tick, ready) {
   return { frames: slots, current: current, upcoming: (current + 1) % count }
 }
 
-// Elapsed time, rather than callback count, determines position. After a
-// long stall/suspend or wall-clock correction, reanchor without racing
-// through unloaded frames. Normal scheduling delays retain their remainder.
-// A loop still loading (ready < count) plays up to its newest assembled
-// frame and waits there, rather than wrapping, until more arrive.
-function radarAdvance(frame, tick, phaseMs, elapsedMs, count, ready) {
-  if (count < 2) return { frame: 0, tick: tick, phaseMs: 0 }
-  var dt = elapsedMs >= 0 && elapsedMs <= 500 ? elapsedMs : 0
-  var elapsed = phaseMs + dt
-  var steps = Math.floor(elapsed / 250)
-  if (ready !== undefined && ready < count) {
-    var room = Math.max(0, ready - 1 - frame)
-    if (steps >= room) return { frame: frame + room, tick: tick + room, phaseMs: 0 }
-  }
-  return { frame: (frame + steps) % count, tick: tick + steps, phaseMs: elapsed % 250 }
+// The radar loop's next position, one frame per timer tick: the next frame,
+// or the first after the last. A loop still loading (`ready` of its frames
+// assembled) waits on its newest frame instead, until more arrive; a frame
+// left over from another, longer loop restarts at the first.
+function radarStep(frame, tick, count, ready) {
+  var n = ready === undefined ? count : Math.min(ready, count)
+  if (count < 2 || n < 1) return { frame: 0, tick: tick }
+  if (frame >= n) return { frame: 0, tick: tick + 1 }
+  if (frame + 1 < n) return { frame: frame + 1, tick: tick + 1 }
+  return n < count ? { frame: frame, tick: tick } : { frame: 0, tick: tick + 1 }
 }
 
 // Where a replacement loop carries on: the first of its frames at or after
@@ -1378,7 +1327,6 @@ function notification(view) {
 if (typeof module !== "undefined") {
   module.exports = {
     PLUGIN_ID: PLUGIN_ID,
-    RADAR_INDEX_URL: RADAR_INDEX_URL,
     YR_RADAR_OBS_INDEX: YR_RADAR_OBS_INDEX,
     YR_RADAR_NOWCAST_INDEX: YR_RADAR_NOWCAST_INDEX,
     YR_RADAR_ZOOM: YR_RADAR_ZOOM,
@@ -1405,17 +1353,13 @@ if (typeof module !== "undefined") {
     radarFramesKey: radarFramesKey,
     rulerTicks: rulerTicks,
     radarImageSlots: radarImageSlots,
-    radarAdvance: radarAdvance,
+    radarStep: radarStep,
     radarFrameAt: radarFrameAt,
     mapViewKey: mapViewKey,
     radarFrameFile: radarFrameFile,
     frameComposeSpecs: frameComposeSpecs,
     frameComposeCommand: frameComposeCommand,
     tileDownloadCommand: tileDownloadCommand,
-    RADAR_ANIMATION_URL: RADAR_ANIMATION_URL,
-    parseRadarIndex: parseRadarIndex,
-    radarFrameLabel: radarFrameLabel,
-    radarDownloadCommand: radarDownloadCommand,
     NOWCAST_BACKGROUND_MS: NOWCAST_BACKGROUND_MS,
     USER_AGENT: USER_AGENT,
     STRINGS: STRINGS,

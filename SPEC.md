@@ -115,9 +115,7 @@ headers and body are captured so `Expires` and `Last-Modified` can be read.
 | Nowcast | `api.met.no/weatherapi/nowcast/2.0/complete?lat&lon` | Every 15 min in the background (keeps the bar's temperature fresh), and as often as `Expires` allows (≈5 min) while the panel is open. A 422 (outside the Nordic radar area) is remembered for a day. |
 | Sun | `api.met.no/weatherapi/sunrise/3.0/sun?lat&lon&date&offset` | Once per local date |
 | Moon | `api.met.no/weatherapi/sunrise/3.0/moon?lat&lon&date&offset` | Once per local date (gives `moonphase` in degrees) |
-| Radar index | `api.met.no/weatherapi/radar/2.0/available.json?area=nordic&type=reflectivity&content=animation` | Only while the radar side panel is open; at most every 2 min. |
-| Radar GIF | `api.met.no/weatherapi/radar/2.0/?area=nordic&type=reflectivity&content=animation` | When the index's newest time changes (≈10 min). 1.7 MB, 19 frames, 659×761. Saved as `radar.gif` in the cache dir via a temp file. `time=` is rejected for animations. |
-| yr.no radar indexes | `tiles.yr.no/api/precipitation-observations/available.json`, `…/precipitation-nowcast/available.json` | Only while the yr.no view is open; at most every 2 min. Undocumented yr.no backend. |
+| yr.no radar indexes | `tiles.yr.no/api/precipitation-observations/available.json`, `…/precipitation-nowcast/available.json` | Only while the radar side panel is open; at most every 2 min. Undocumented yr.no backend. |
 | yr.no radar tiles | from the indexes (z5–6; z7 view uses z6 scaled) | Per new frame and zoom, 12 at a time over one HTTP/2 connection, only missing files, pruned after 2 h. A batch counts as done only when all its tiles are on disk; otherwise it is retried after 5 s, doubling up to 60 s. |
 | Base map | none: `map/tiles/{z}/{x}/{y}.png` and `map/places.json` ship with the plugin | Built from OpenStreetMap by `scripts/build-basemap.py`. |
 | Radar frames | none: assembled locally | Once a view's radar tiles are downloaded, ImageMagick (in Omarchy's base packages) assembles each frame into one map-sized PNG (`f_*.png`, pruned after 2 h). A frame with a tile missing is never written; the loop is only swapped in when every frame exists. Playback then decodes one image per frame instead of 20–25 tiles (≈3× less CPU). |
@@ -349,57 +347,53 @@ Notes:
 
 ## Radar map
 
-The radar side panel has two views, toggled at its bottom (remembered in the
-cache file's `prefs`):
+The radar side panel shows our base map with yr.no's radar tiles on top.
+yr.no's radar only covers the Nordic radar network, ≈0.5–35.5°E,
+54.2–72.8°N (`RADAR_COVERAGE` in Model.js, `COVERAGE` in the build script,
+kept in sync by a test; measured from the tiles, which are white outside
+coverage). Views never leave that box (`Model.mapView`):
 
-- **MET:** MET's Nordic radar GIF, as downloaded.
-- **Map:** our base map with yr.no's radar tiles on top. yr.no's radar only
-  covers the Nordic radar network, ≈0.5–35.5°E, 54.2–72.8°N
-  (`RADAR_COVERAGE` in Model.js, `COVERAGE` in the build script, kept in
-  sync by a test; measured from the tiles, which are white outside
-  coverage). Views never leave that box (`Model.mapView`):
+| Step | Tiles | px/tile | View |
+|---|---|---|---|
+| 0 | z5 | fitted | The whole coverage, same for every location |
+| 1 (default) | z6 | 181 | ≈1200 km around the location |
+| 2 | z6 | 256 | ≈850 km |
+| 3 | z7 | 256 | ≈425 km |
 
-  | Step | Tiles | px/tile | View |
-  |---|---|---|---|
-  | 0 | z5 | fitted | The whole coverage, same for every location |
-  | 1 (default) | z6 | 181 | ≈1200 km around the location |
-  | 2 | z6 | 256 | ≈850 km |
-  | 3 | z7 | 256 | ≈425 km |
+On steps 1–3 the view centres on the location but is shifted to stay in
+the coverage box, so the marker can sit off-centre. Parts of the box
+without radar (open sea) are dimmed and hatched by the radar shader, from
+one image for the whole loop: its latest observation. yr.no's frames
+disagree on coverage (a radar missing from one observation, forecast
+frames filling the gaps as they run ahead), so taken per frame the
+hatching would change shape through the loop.
 
-  On steps 1–3 the view centres on the location but is shifted to stay in
-  the coverage box, so the marker can sit off-centre. Parts of the box
-  without radar (open sea) are dimmed and hatched by the radar shader, from
-  one image for the whole loop: its latest observation. yr.no's frames
-  disagree on coverage (a radar missing from one observation, forecast
-  frames filling the gaps as they run ahead), so taken per frame the
-  hatching would change shape through the loop.
+The base map is rendered by `scripts/build-basemap.py` from OpenStreetMap
+extracts (`scripts/basemap-regions.txt`) for the coverage box and the
+overview frame around it. Tiles hold masks (R water, G roads by class,
+B national borders), coloured by `shaders/mapdata.frag` with the theme.
+Labels come from `map/places.json`, chosen per step by population and
+placed without overlaps (`Model.mapLabels`).
 
-  The base map is rendered by `scripts/build-basemap.py` from OpenStreetMap
-  extracts (`scripts/basemap-regions.txt`) for the coverage box and the
-  overview frame around it. Tiles hold masks (R water, G roads by class,
-  B national borders), coloured by `shaders/mapdata.frag` with the theme.
-  Labels come from `map/places.json`, chosen per step by population and
-  placed without overlaps (`Model.mapLabels`).
+Playback shows the real radar frames only, 250 ms per five-minute frame.
+In-between frames can't be made to look real from five-minute data: rain
+changes shape between frames and radars update at different moments, so
+interpolated frames show as pulsing or twitching. A shared timer steps one
+frame per 250 ms tick; it holds while that frame's images are still
+decoding, while paused, or while the panel is closed.
 
-  Playback shows the real radar frames only, 250 ms per five-minute frame.
-  In-between frames can't be made to look real from five-minute data: rain
-  changes shape between frames and radars update at different moments, so
-  interpolated frames show as pulsing or twitching. A shared timer advances
-  by elapsed time, keeping scheduling remainders; it holds while the next
-  frame's images are still decoding, while paused, or while the panel is
-  closed, and reanchors after long stalls and clock jumps.
-
-  On a first open or new zoom, the latest observation is assembled as a
-  still preview; then frames are assembled batch by batch as their tiles
-  arrive and play at once, waiting on the newest assembled frame (about 2 s
-  to the first frames; all 41 take about 9 s). Once a complete loop plays,
-  a replacement is published at a frame boundary and carries on at the same
-  time. Paused playback keeps its loop. `RadarImages.qml` keeps three
-  rotating image slots that decode frames ahead, plus a staging set while a
-  loop is replaced; the previous set stays on screen until the new frames
-  are decoded. Images skip Qt's decoded-image cache and are sampled directly
-  by the radar shader, without offscreen layers. ImageMagick assembles
-  frames in four processes of one thread each.
+On a first open or new zoom, the latest observation is assembled as a
+still preview; then frames are assembled batch by batch as their tiles
+arrive and play at once, waiting on the newest assembled frame (about 1–2 s
+to the first frames; all 41 take about 4–9 s). Each batch only extends the
+loop on screen: its images, frame and timing carry on. Once a complete
+loop plays, a replacement is published at a frame boundary and carries on
+at the same time. Paused playback keeps its loop. `RadarImages.qml` keeps
+three rotating image slots that decode frames ahead, plus a staging set while a
+loop is replaced; the previous set stays on screen until the new frames
+are decoded. Images skip Qt's decoded-image cache and are sampled directly
+by the radar shader, without offscreen layers. ImageMagick assembles
+frames in four processes of one thread each.
 
 ## Testing
 
