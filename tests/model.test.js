@@ -22,9 +22,53 @@ test("runs in the expected zone", () => {
 test("language follows locale, English fallback", () => {
   assert.equal(M.langFor("sv_SE"), "sv")
   assert.equal(M.langFor("sv_FI.UTF-8"), "sv")
+  assert.equal(M.langFor("SV"), "sv")
+  assert.equal(M.langFor("nb_NO"), "nb")
+  assert.equal(M.langFor("nn_NO.UTF-8"), "nb")
+  assert.equal(M.langFor("no"), "nb")
   assert.equal(M.langFor("en_US"), "en")
-  assert.equal(M.langFor("nb_NO"), "en")
+  assert.equal(M.langFor("de_DE"), "en")
+  assert.equal(M.langFor("svx"), "en")
+  assert.equal(M.langFor("nds_DE"), "en")
   assert.equal(M.langFor(""), "en")
+})
+
+// Every language has what English has, of the same shape: a new one that
+// misses a string or a grammar form fails here, not on screen.
+test("languages: every entry is complete", () => {
+  // Lists are fixed-size (months, compass points, grammar forms), except
+  // how many locale prefixes a language has.
+  const shape = (v, key) => Array.isArray(v) ? (key === "locales" ? "array" : "array:" + v.length)
+    : typeof v === "object" ? "object" : typeof v
+  const walk = (ref, other, where) => {
+    for (const key of Object.keys(ref)) {
+      assert.ok(key in other, `${where}.${key} missing`)
+      assert.equal(shape(other[key], key), shape(ref[key], key), `${where}.${key}`)
+      if (shape(ref[key]) === "object") walk(ref[key], other[key], `${where}.${key}`)
+    }
+    for (const key of Object.keys(other)) assert.ok(key in ref, `${where}.${key} not in English`)
+  }
+  for (const lang of Object.keys(M.STRINGS)) {
+    walk(M.STRINGS.en, M.STRINGS[lang], lang)
+    for (const kind of ["rain", "sleet", "snow", "light", "heavy"])
+      assert.ok(M.STRINGS[lang].precip[kind].every((w) => w !== ""), `${lang}.precip.${kind}`)
+  }
+})
+
+test("Norwegian: descriptions, dates, numbers and hours", () => {
+  assert.equal(M.describeSymbol("clearsky_day", "nb"), "Klarvær")
+  assert.equal(M.describeSymbol("lightrain", "nb"), "Lett regn")
+  assert.equal(M.describeSymbol("heavyrainshowersandthunder_day", "nb"), "Kraftige regnbyger og torden")
+  assert.equal(M.describeSymbol("sleetshowers_night", "nb"), "Sluddbyger")
+  assert.equal(M.describeSymbol("lightssnowshowersandthunder_night", "nb"), "Lette snøbyger og torden")
+  const today = Date.parse("2026-09-26T00:00:00+02:00")
+  assert.equal(M.dayTitle(Date.parse("2026-09-28T00:00:00+02:00"), today, "nb"), "Mandag 28. sep")
+  assert.equal(M.dayTitle(today, today, "nb"), "I dag 26. sep")
+  assert.equal(M.formatNumber(0.4, 1, "nb"), "0,4")
+  assert.equal(M.formatPrecip(0.2, 0, 1.4, "nb"), "0–1,4 mm")
+  assert.ok(M.geocodeUrl("Bergen", "nb").endsWith("&language=no"))
+  const frames = [0, 1, 2].map((h) => ({ timeMs: h * 3600000 }))
+  assert.deepEqual(M.rulerTicks(frames, 1, "nb").map((t) => t.stamp), ["\u22121 t", "Nå", "+1 t"])
 })
 
 test("numbers use a decimal comma in Swedish", () => {
@@ -470,7 +514,8 @@ test("map maths never loops or divides by zero on odd box sizes", () => {
         const v = M.mapView(step, 57.93, 12.53, w, h)
         const tiles = M.viewTiles(v, w, h)
         M.viewTiles(M.radarView(v), w, h)
-        M.mapLabels({ places: [["A", "A", "A", 57.9, 12.5, 1e6, 3]] }, v, w, h, "sv", 7, "X")
+        M.mapLabels({ fields: ["name", "name_sv", "name_en", "lat", "lon", "population", "flags"],
+                     places: [["A", "A", "A", 57.9, 12.5, 1e6, 3]] }, v, w, h, "sv", 7, "X")
         if (w < 64 || !(w >= 64)) { if (v !== null || tiles.length) throw new Error("view for tiny box " + w) }
         else if (!tiles.length) throw new Error("no tiles for " + w + "x" + h)
       }

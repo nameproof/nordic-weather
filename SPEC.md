@@ -195,24 +195,51 @@ Rules:
 
 ## Language
 
-- **Picking the language:** `Qt.locale().name` starting with `sv` gives `sv`;
-  anything else gives `en`.
-- **Strings:** all UI strings live in one `STRINGS = { sv: {...}, en: {...} }`
-  table in `Model.js`.
-- **Dates:** weekday and month names come from the same table.
+Swedish (`sv`), Norwegian Bokmål (`nb`) and English (`en`).
+
+- **Picking the language:** the first `STRINGS` entry whose `locales`
+  prefixes match `Qt.locale().name` (`sv_SE.UTF-8` → `sv`; `nb`, `nn` and
+  `no` → `nb`); anything else gives `en`. It is read when the shell starts.
+- **One place per language:** everything language-specific lives in its
+  `STRINGS` entry in `Model.js`, not in code:
+  - the UI strings, weekday and month names, compass points, moon phases;
+  - `decimal`: decimal separator (`0,4 mm` in sv and nb, `0.4 mm` in en);
+  - `dayDate`: a date in day titles;
+  - `hour`: the hour unit in short texts (`−1 h`, `/6h`; `t` in nb);
+  - `geocode`: the place-search language (`no` for nb, which gives
+    Norwegian place names where `nb` doesn't);
+  - `precip`: the grammar for precipitation descriptions (below).
+
+  Adding a language is one more entry, plus a `name_<lang>` column in
+  `map/places.json` (`LABEL_NAMES` in `scripts/build-basemap.py`, then
+  `--places`); without one the map labels use the English names. A test
+  checks that every entry has every key English has, with lists of the
+  same length.
+- **Dates:**
   - sv: "Idag 26 sep", "Imorgon 27 sep", "Måndag 28 sep"
+  - nb: "I dag 26. sep", "I morgen 27. sep", "Mandag 28. sep"
   - en: "Today Sep 26", "Tomorrow Sep 27", "Monday Sep 28"
-- **Numbers:** decimal comma in Swedish (`0,4 mm`), point in English.
-  Temperatures are whole degrees.
+- **Numbers:** temperatures are whole degrees.
 - **Units:** °C, m/s, mm, %. Wind stays in m/s for English too, which matches
   yr.no.
+- **Map labels:** a place name in Latin script is shown as it is (Göteborg,
+  not Gothenburg); others use the language's own name from OpenStreetMap
+  (`name:sv`; `name:nb` or `name:no`), then English (`Москва` → Moskva /
+  Moscow).
 
 ### Weather descriptions
 
-MET symbol codes are `<base>[_day|_night|_polartwilight]`. We keep all ~41
-base codes, each with a sv and en description, e.g. `lightrainshowers`:
-"Lätta regnskurar" / "Light rain showers".
+MET symbol codes are `<base>[_day|_night|_polartwilight]`.
 
+- **Without precipitation** (clear sky, fair, partly cloudy, cloudy, fog):
+  one word per language in `symbols`, following yr.no's wording in
+  Norwegian ("Klarvær", "Lettskyet", "Delvis skyet", "Skyet", "Tåke").
+- **With precipitation** (the other ~36 codes): built from the code's
+  parts (`light|heavy`, `rain|sleet|snow`, `showers`, `andthunder`) with
+  the language's `precip` grammar: nouns per kind as [plain, showers], the
+  light/heavy words in the matching form, and a thunder suffix. So
+  `lightrainshowers` is "Lätta regnskurar" / "Lette regnbyger" / "Light
+  rain showers".
 - **API typos:** MET really does send the misspelled
   `lightssleetshowersandthunder` and `lightssnowshowersandthunder`. Map both
   to the same entry as the correctly spelled code, and cover them in a test.

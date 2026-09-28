@@ -26,8 +26,32 @@ var NOWCAST_BACKGROUND_MS = 15 * 60000
 
 // ---------------------------------------------------------------- strings
 
+// One entry per language: its text, plus what differs beyond text.
+//   locales:  locale-name prefixes that pick it (the first entry matching
+//             Qt.locale().name wins; English is the fallback)
+//   decimal:  decimal separator
+//   dayDate:  a day's date in titles ({day}, {month} from months)
+//   hour:     the hour unit in short texts ("−1 h", "/6h")
+//   geocode:  language code for place search (Open-Meteo)
+//   precip:   precipitation descriptions (describeSymbol): nouns per kind as
+//             [plain, showers], the light/heavy words to put before them
+//             (also [plain, showers], for agreement), and the thunder suffix
+// A new language is one more entry; tests check it has every key.
 var STRINGS = {
   sv: {
+    locales: ["sv"],
+    decimal: ",",
+    dayDate: "{day} {month}",
+    hour: "h",
+    geocode: "sv",
+    precip: {
+      rain: ["regn", "regnskurar"],
+      sleet: ["snöblandat regn", "byar av snöblandat regn"],
+      snow: ["snöfall", "snöbyar"],
+      light: ["lätt", "lätta"],
+      heavy: ["kraftigt", "kraftiga"],
+      thunder: " och åska"
+    },
     today: "Idag",
     tomorrow: "Imorgon",
     months: ["jan", "feb", "mar", "apr", "maj", "jun", "jul", "aug", "sep", "okt", "nov", "dec"],
@@ -71,7 +95,78 @@ var STRINGS = {
       fog: "Dimma"
     }
   },
+  // Bokmål, also for Nynorsk and plain "no" locales.
+  nb: {
+    locales: ["nb", "nn", "no"],
+    decimal: ",",
+    dayDate: "{day}. {month}",
+    hour: "t",
+    geocode: "no",
+    precip: {
+      rain: ["regn", "regnbyger"],
+      sleet: ["sludd", "sluddbyger"],
+      snow: ["snø", "snøbyger"],
+      light: ["lett", "lette"],
+      heavy: ["kraftig", "kraftige"],
+      thunder: " og torden"
+    },
+    today: "I dag",
+    tomorrow: "I morgen",
+    months: ["jan", "feb", "mar", "apr", "mai", "jun", "jul", "aug", "sep", "okt", "nov", "des"],
+    weekdays: ["Søndag", "Mandag", "Tirsdag", "Onsdag", "Torsdag", "Fredag", "Lørdag"],
+    weekdaysShort: ["Søn", "Man", "Tir", "Ons", "Tor", "Fre", "Lør"],
+    compass: ["N", "NØ", "Ø", "SØ", "S", "SV", "V", "NV"],
+    moonPhases: ["Nymåne", "Voksende månesigd", "Første kvarter", "Voksende måne",
+                 "Fullmåne", "Minkende måne", "Siste kvarter", "Minkende månesigd"],
+    feels: "Føles som",
+    wind: "Vind",
+    humidity: "Fukt",
+    pressure: "Trykk",
+    pressureNext: "på 3 t",
+    moonHigh: "høyest",
+    gust: "kast",
+    forecastFrom: "prognose fra",
+    stale: "Utdatert",
+    fetching: "Henter prognose…",
+    searchPlaceholder: "Søk etter sted",
+    noResults: "Fant ingen steder",
+    noLocation: "Velg et sted for å se været",
+    chooseLocation: "Velg sted",
+    windLabel: "Vind",
+    precipitation: "Nedbør",
+    rain: "Regn",
+    sleet: "Sludd",
+    snow: "Snø",
+    nowcastDry: "Opphold neste {n} min",
+    nowcastWetAll: "{kind} neste {n} min",
+    nowcastStopping: "{kind} nå, gir seg om ca. {n} min",
+    nowcastStarting: "{kind} om ca. {n} min",
+    radar: "Radar",
+    radarLoading: "Henter radar…",
+    radarNow: "Nå",
+    forecastWord: "Prognose",
+    symbols: {
+      clearsky: "Klarvær",
+      fair: "Lettskyet",
+      partlycloudy: "Delvis skyet",
+      cloudy: "Skyet",
+      fog: "Tåke"
+    }
+  },
   en: {
+    locales: ["en"],
+    decimal: ".",
+    dayDate: "{month} {day}",
+    hour: "h",
+    geocode: "en",
+    precip: {
+      rain: ["rain", "rain showers"],
+      sleet: ["sleet", "sleet showers"],
+      snow: ["snow", "snow showers"],
+      light: ["light", "light"],
+      heavy: ["heavy", "heavy"],
+      thunder: " and thunder"
+    },
     today: "Today",
     tomorrow: "Tomorrow",
     months: ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"],
@@ -117,9 +212,18 @@ var STRINGS = {
   }
 }
 
-// Swedish for sv* locales, English for everything else.
+// The language whose locales match a locale name ("sv_SE.UTF-8" → "sv"),
+// English otherwise.
 function langFor(localeName) {
-  return /^sv($|[_.-])/i.test(String(localeName || "")) ? "sv" : "en"
+  var name = String(localeName || "").toLowerCase()
+  for (var lang in STRINGS) {
+    var prefixes = STRINGS[lang].locales
+    for (var i = 0; i < prefixes.length; i++) {
+      var p = prefixes[i]
+      if (name.indexOf(p) === 0 && (name.length === p.length || /[_.@-]/.test(name.charAt(p.length)))) return lang
+    }
+  }
+  return "en"
 }
 
 function strings(lang) {
@@ -141,7 +245,7 @@ function isNum(value) {
 function formatNumber(value, decimals, lang) {
   if (!isNum(value)) return ""
   var s = String(parseFloat(value.toFixed(decimals)))
-  return lang === "sv" ? s.replace(".", ",") : s
+  return s.replace(".", strings(lang).decimal)
 }
 
 function roundTemp(value) {
@@ -210,10 +314,7 @@ function dayTitle(dayStartMs, todayStartMs, lang) {
   var d = new Date(dayStartMs)
   var diff = Math.round((dayStartMs - todayStartMs) / DAY_MS)
   var name = diff === 0 ? s.today : diff === 1 ? s.tomorrow : s.weekdays[d.getDay()]
-  var date = lang === "sv"
-    ? d.getDate() + " " + s.months[d.getMonth()]
-    : s.months[d.getMonth()] + " " + d.getDate()
-  return name + " " + date
+  return name + " " + fill(s.dayDate, { day: d.getDate(), month: s.months[d.getMonth()] })
 }
 
 function dayShortName(dayStartMs, todayStartMs, lang) {
@@ -260,7 +361,7 @@ function moonUrl(location, ms) {
 
 function geocodeUrl(query, lang) {
   return "https://geocoding-api.open-meteo.com/v1/search?name=" + encodeURIComponent(query)
-    + "&count=6&format=json&language=" + (lang === "sv" ? "sv" : "en")
+    + "&count=6&format=json&language=" + strings(lang).geocode
 }
 
 // argv for one request. `-D -` puts the response headers ahead of the body
@@ -343,21 +444,9 @@ function describeSymbol(code, lang) {
   var p = parsePrecipBase(base)
   if (!p) return base ? base.charAt(0).toUpperCase() + base.slice(1) : ""
 
-  var text
-  if (lang === "sv") {
-    var nouns = {
-      rain: ["regn", "regnskurar"],
-      sleet: ["snöblandat regn", "byar av snöblandat regn"],
-      snow: ["snöfall", "snöbyar"]
-    }
-    var noun = nouns[p.kind][p.showers ? 1 : 0]
-    var adjective = p.intensity === "light" ? (p.showers ? "lätta " : "lätt ")
-      : p.intensity === "heavy" ? (p.showers ? "kraftiga " : "kraftigt ") : ""
-    text = adjective + noun + (p.thunder ? " och åska" : "")
-  } else {
-    text = (p.intensity ? p.intensity + " " : "") + p.kind + (p.showers ? " showers" : "")
-      + (p.thunder ? " and thunder" : "")
-  }
+  var g = s.precip
+  var form = p.showers ? 1 : 0
+  var text = (p.intensity ? g[p.intensity][form] + " " : "") + g[p.kind][form] + (p.thunder ? g.thunder : "")
   return text.charAt(0).toUpperCase() + text.slice(1)
 }
 
@@ -1416,7 +1505,7 @@ function rulerTicks(frames, nowIndex, lang) {
     var offset = frames[i].timeMs - frames[now].timeMs
     var stamp = offset % HOUR_MS !== 0 ? ""
       : offset === 0 ? strings(lang).radarNow
-      : (offset < 0 ? "\u2212" : "+") + Math.abs(offset) / HOUR_MS + " h"
+      : (offset < 0 ? "\u2212" : "+") + Math.abs(offset) / HOUR_MS + " " + strings(lang).hour
     var forecast = !!frames[i].forecast
     out.push({ index: i, level: level, stamp: stamp, forecast: forecast,
                key: frames[i].timeMs + "|" + level + "|" + stamp + "|" + forecast })
@@ -1506,14 +1595,21 @@ function frameComposeCommand(dir, width, height, tilePx, specs) {
   return ["bash", "-c", script, "bash", dir, String(width), String(height), String(tilePx)].concat(specs)
 }
 
-// Place labels for a map view. places.json rows are
-// [name, name_sv, name_en, lat, lon, population, flags] (flags: 1 capital,
-// 2 city), most important first. Picks what the zoom level warrants and
-// skips labels that would overlap each other or the marker's own label.
+// Place labels for a map view. places.json names its columns in `fields`:
+// the local name, one name_<lang> per label language, lat, lon, population
+// and flags (1 capital, 2 city); rows most important first. A language
+// without its own column gets the English names. Picks what the zoom level
+// warrants and skips labels that would overlap each other or the marker's
+// own label.
 // charPx: average character width of the label font.
 function mapLabels(places, view, width, height, lang, charPx, markerName) {
   if (!view || !(view.px >= 1) || !(charPx > 0)) return []
   var rows = places && Array.isArray(places.places) ? places.places : []
+  var fields = places && Array.isArray(places.fields) ? places.fields : []
+  var col = function(name) { return fields.indexOf(name) }
+  var nameCol = [col("name_" + lang), col("name_en"), col("name")].filter(function(i) { return i >= 0 })[0]
+  var latCol = col("lat"), lonCol = col("lon"), popCol = col("population"), flagsCol = col("flags")
+  if (nameCol === undefined || latCol < 0 || lonCol < 0 || popCol < 0 || flagsCol < 0) return []
   var z = view.z
   var left = view.left
   var top = view.top
@@ -1524,11 +1620,12 @@ function mapLabels(places, view, width, height, lang, charPx, markerName) {
   var out = []
   for (var i = 0; i < rows.length && out.length < 40; i++) {
     var r = rows[i]
-    if (!(r[6] & 1) && r[5] < minPop) continue
-    var t = worldTile(r[3], r[4], z)
+    var flags = r[flagsCol]
+    if (!(flags & 1) && r[popCol] < minPop) continue
+    var t = worldTile(r[latCol], r[lonCol], z)
     var x = t.x * view.px - left
     var y = t.y * view.px - top
-    var name = lang === "sv" ? r[1] : r[2]
+    var name = r[nameCol]
     var w = 10 + name.length * charPx
     if (x < 4 || y < lineH || x + w > width - 4 || y > height - lineH) continue
     var box = { x: x - 4, y: y - lineH / 2, w: w + 4, h: lineH }
@@ -1539,7 +1636,7 @@ function mapLabels(places, view, width, height, lang, charPx, markerName) {
     }
     if (clash) continue
     taken.push(box)
-    out.push({ text: name, x: Math.round(x), y: Math.round(y), capital: (r[6] & 1) === 1,
+    out.push({ text: name, x: Math.round(x), y: Math.round(y), capital: (flags & 1) === 1,
                key: name + "@" + Math.round(x) + "," + Math.round(y) })
   }
   return out

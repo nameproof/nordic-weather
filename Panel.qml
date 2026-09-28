@@ -970,7 +970,7 @@ Panel {
                     anchors.verticalCenter: parent.verticalCenter
                     horizontalAlignment: Text.AlignRight
                     textFormat: Text.PlainText
-                    text: modelData.precip.text + (modelData.precip.text !== "" && modelData.periodHours === 6 ? "/6h" : "")
+                    text: modelData.precip.text + (modelData.precip.text !== "" && modelData.periodHours === 6 ? "/6" + root.t.hour : "")
                     color: root.fg
                     font.family: root.fontFamily
                     font.pixelSize: Style.font.bodySmall

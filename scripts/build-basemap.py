@@ -11,8 +11,10 @@ simplified land polygons from build/osm/ (see build/regions.txt), and writes:
   map/places.json            Cities and towns for labels drawn by the panel.
 
 Run with the build venv (osmium, shapely, pyshp, pillow, numpy):
-  build/.venv/bin/python scripts/build-basemap.py [--download] [--extract] [--render]
-(no flags = all three; downloads ≈6 GB into build/osm/ and skips files it has).
+  build/.venv/bin/python scripts/build-basemap.py [--download] [--extract] [--render] [--places]
+(no flags = all four; downloads ≈6 GB into build/osm/ and skips files it has).
+--places alone rewrites map/places.json from the downloaded extracts (a
+few minutes), e.g. after adding a label language.
 
 Map data © OpenStreetMap contributors, ODbL.
 """
@@ -56,6 +58,13 @@ ROADS = {
 }
 BORDER_WIDTH = 1.2
 PLACE_KINDS = {"city", "town"}
+# Label languages (Model.js STRINGS) and the OSM name tags for each, in
+# order of preference; places.json gets a name_<lang> column per language.
+LABEL_NAMES = {
+    "sv": ["name:sv"],
+    "nb": ["name:nb", "name:no"],
+    "en": ["name:en"],
+}
 
 
 def lonlat_to_tile(lon, lat, z):
@@ -103,7 +112,7 @@ def inv_lat(my):
 # ---------------------------------------------------------------- extraction
 
 def extract_region(pbf):
-    """One OSM extract → water polygons, roads, borders and places (Mercator)."""
+    """One OSM extract → water polygons, roads and borders (Mercator)."""
     import osmium
     import shapely
     from shapely import wkb as shp_wkb
@@ -114,7 +123,6 @@ def extract_region(pbf):
         return name, "cached"
 
     factory = osmium.geom.WKBFactory()
-    min_lon, min_lat, max_lon, max_lat = extent_lonlat()
 
     # Pass 1: ways that are members of national (admin_level=2) boundaries.
     border_ways = set()
@@ -124,9 +132,9 @@ def extract_region(pbf):
                 if m.type == "w":
                     border_ways.add(m.ref)
 
-    water, roads, borders, places = [], [], [], []
+    water, roads, borders = [], [], []
 
-    # Pass 2: areas (lakes), ways (roads, border ways) and nodes (places).
+    # Pass 2: areas (lakes) and ways (roads, border ways).
     fp = (osmium.FileProcessor(pbf)
           .with_locations()
           .with_areas(osmium.filter.KeyFilter("natural", "waterway", "landuse", "water")))
@@ -152,31 +160,52 @@ def extract_region(pbf):
                     roads.append((hw, geom.wkb))
                 if in_border and obj.tags.get("maritime") != "yes":
                     borders.append(geom.wkb)
-            elif obj.is_node():
-                t = obj.tags
-                if t.get("place") not in PLACE_KINDS or "name" not in t:
-                    continue
-                lon, lat = obj.location.lon, obj.location.lat
-                if not (min_lon <= lon <= max_lon and min_lat <= lat <= max_lat):
-                    continue
-                try:
-                    pop = int(str(t.get("population", "0")).replace(" ", "").replace(",", "").split(".")[0] or 0)
-                except ValueError:
-                    pop = 0
-                places.append({
-                    "name": t.get("name"), "en": t.get("name:en"), "sv": t.get("name:sv"),
-                    "lat": round(lat, 4), "lon": round(lon, 4), "pop": pop,
-                    "kind": t.get("place"), "capital": t.get("capital") in ("yes", "2"),
-                })
         except (RuntimeError, ValueError):
             # Broken geometry (unclosed ring, missing nodes at extract edges).
             continue
 
     os.makedirs(EXTRACTED, exist_ok=True)
     with open(out_path + ".part", "wb") as f:
-        pickle.dump({"water": water, "roads": roads, "borders": borders, "places": places}, f)
+        pickle.dump({"water": water, "roads": roads, "borders": borders}, f)
     os.replace(out_path + ".part", out_path)
-    return name, f"{len(water)} water, {len(roads)} roads, {len(borders)} border ways, {len(places)} places"
+    return name, f"{len(water)} water, {len(roads)} roads, {len(borders)} border ways"
+
+
+def extract_places(pbf):
+    """One OSM extract → its cities and towns inside the map, with every
+    name tag the label languages use."""
+    import osmium
+
+    min_lon, min_lat, max_lon, max_lat = extent_lonlat()
+    tags = {tag for names in LABEL_NAMES.values() for tag in names}
+    places = []
+    for node in osmium.FileProcessor(pbf, osmium.osm.NODE).with_filter(osmium.filter.KeyFilter("place")):
+        t = node.tags
+        if t.get("place") not in PLACE_KINDS or "name" not in t:
+            continue
+        lon, lat = node.location.lon, node.location.lat
+        if not (min_lon <= lon <= max_lon and min_lat <= lat <= max_lat):
+            continue
+        try:
+            pop = int(str(t.get("population", "0")).replace(" ", "").replace(",", "").split(".")[0] or 0)
+        except ValueError:
+            pop = 0
+        places.append({
+            "name": t.get("name"), "names": {k: t.get(k) for k in tags if t.get(k)},
+            "lat": round(lat, 4), "lon": round(lon, 4), "pop": pop,
+            "kind": t.get("place"), "capital": t.get("capital") in ("yes", "2"),
+        })
+    return os.path.basename(pbf).replace("-latest.osm.pbf", ""), places
+
+
+def places_all(jobs):
+    pbfs = sorted(os.path.join(OSM, f) for f in os.listdir(OSM) if f.endswith("-latest.osm.pbf"))
+    places = []
+    with ProcessPoolExecutor(max_workers=jobs) as pool:
+        for name, found in pool.map(extract_places, pbfs):
+            places += found
+    print(f"  {len(places)} places", flush=True)
+    write_places(places)
 
 
 def to_merc(geom):
@@ -228,7 +257,7 @@ def load_land():
 
 def load_extracted():
     from shapely import wkb as shp_wkb
-    water, roads, borders, places = [], [], [], []
+    water, roads, borders = [], [], []
     for f in sorted(os.listdir(EXTRACTED)):
         if not f.endswith(".pickle"):
             continue
@@ -237,8 +266,7 @@ def load_extracted():
         water += [shp_wkb.loads(w) for w in d["water"]]
         roads += [(c, shp_wkb.loads(g)) for c, g in d["roads"]]
         borders += [shp_wkb.loads(g) for g in d["borders"]]
-        places += d["places"]
-    return water, roads, borders, places
+    return water, roads, borders
 
 
 def tile_range(z):
@@ -254,8 +282,8 @@ def render_all(jobs):
     print("loading land polygons…", flush=True)
     land = load_land()
     print("loading extracted features…", flush=True)
-    water, roads, borders, places = load_extracted()
-    print(f"  {len(land)} land, {len(water)} water, {len(roads)} roads, {len(borders)} border ways, {len(places)} places", flush=True)
+    water, roads, borders = load_extracted()
+    print(f"  {len(land)} land, {len(water)} water, {len(roads)} roads, {len(borders)} border ways", flush=True)
 
     # Load once here; forked workers share it (Python 3.14 defaults to
     # forkserver, which would make every worker load its own copy).
@@ -277,8 +305,6 @@ def render_all(jobs):
             done += 1
             if done % 50 == 0:
                 print(f"  {done}/{len(tiles)}", flush=True)
-
-    write_places(places)
 
 
 # Geometry and spatial indexes for the render workers (filled before forking).
@@ -376,20 +402,26 @@ def write_places(places):
     def latin(s):
         return s is not None and all(ord(c) < 0x250 for c in s)
 
+    # A name in Latin script is kept as it is (Göteborg, not Gothenburg);
+    # others (Москва) use the language's own name, then English.
+    def label(p, lang):
+        if latin(p["name"]):
+            return p["name"]
+        for tag in LABEL_NAMES[lang] + ["name:en"]:
+            if p["names"].get(tag):
+                return p["names"][tag]
+        return p["name"]
+
     out = []
     for p in rows:
         if p["kind"] == "town" and p["pop"] < 2000:
             continue
-        # [name, name for sv, name for en, lat, lon, population, flags]
-        sv = p["sv"] if p["sv"] else (p["name"] if latin(p["name"]) else (p["en"] or p["name"]))
-        en = p["en"] if p["en"] and not latin(p["name"]) else (p["name"] if latin(p["name"]) else (p["en"] or p["name"]))
-        # Local names are kept for the Nordic countries (Göteborg, not Gothenburg).
-        out.append([p["name"], sv if not latin(p["name"]) else p["name"], en, p["lat"], p["lon"], p["pop"],
-                    (1 if p["capital"] else 0) | (2 if p["kind"] == "city" else 0)])
+        out.append([p["name"]] + [label(p, lang) for lang in LABEL_NAMES]
+                   + [p["lat"], p["lon"], p["pop"], (1 if p["capital"] else 0) | (2 if p["kind"] == "city" else 0)])
     os.makedirs(OUT, exist_ok=True)
     with open(os.path.join(OUT, "places.json"), "w") as f:
         json.dump({"attribution": "© OpenStreetMap contributors (ODbL)",
-                   "fields": ["name", "name_sv", "name_en", "lat", "lon", "population", "flags"],
+                   "fields": ["name"] + ["name_" + lang for lang in LABEL_NAMES] + ["lat", "lon", "population", "flags"],
                    "places": out}, f, ensure_ascii=False, separators=(",", ":"))
     print(f"wrote {len(out)} places", flush=True)
 
@@ -421,10 +453,11 @@ def main():
     ap.add_argument("--download", action="store_true")
     ap.add_argument("--extract", action="store_true")
     ap.add_argument("--render", action="store_true")
+    ap.add_argument("--places", action="store_true")
     ap.add_argument("--jobs", type=int, default=max(1, (os.cpu_count() or 4) // 2))
     args = ap.parse_args()
-    if not (args.download or args.extract or args.render):
-        args.download = args.extract = args.render = True
+    if not (args.download or args.extract or args.render or args.places):
+        args.download = args.extract = args.render = args.places = True
     if args.download:
         print("downloading…", flush=True)
         download_all()
@@ -433,6 +466,9 @@ def main():
         extract_all(min(args.jobs, 6))
     if args.render:
         render_all(args.jobs)
+    if args.places:
+        print("places…", flush=True)
+        places_all(args.jobs)
 
 
 if __name__ == "__main__":
