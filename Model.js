@@ -758,17 +758,21 @@ function parseGeocodingResults(raw) {
   var data = parseJson(raw)
   var results = data && data.results
   if (!Array.isArray(results)) return []
-  var out = []
+  // Unique keys: the panel lists these in a ScriptModel, which needs them.
+  var out = [], seen = {}
   for (var i = 0; i < results.length; i++) {
     var r = results[i]
     if (!r || !r.name || !isNum(r.latitude) || !isNum(r.longitude)) continue
+    var key = r.name + "@" + r.latitude + "," + r.longitude
+    if (seen[key]) continue
+    seen[key] = true
     out.push({
       name: String(r.name),
       description: [r.admin1, r.country].filter(function(part) { return !!part }).join(", "),
       latitude: r.latitude,
       longitude: r.longitude,
       elevation: isNum(r.elevation) ? r.elevation : null,
-      key: r.name + "@" + r.latitude + "," + r.longitude
+      key: key
     })
   }
   return out
@@ -1537,6 +1541,19 @@ function parseTileIndex(text) {
   return out
 }
 
+// How old the newest radar observation may be for a loop to be shown.
+// Older radar (the computer slept, the network is down) is worse than an
+// empty map: it looks current but isn't.
+var RADAR_MAX_AGE_MS = 30 * 60000
+
+// Whether a frame list (radarFrames) may be shown at nowMs: it has an
+// observation no older than RADAR_MAX_AGE_MS, and no refresh of its index
+// is still awaited (awaiting: the radar opened with a refresh under way).
+function radarUsable(radar, nowMs, awaiting) {
+  if (awaiting || !radar || radar.nowIndex < 0 || !radar.frames.length) return false
+  return nowMs - radar.frames[radar.nowIndex].timeMs <= RADAR_MAX_AGE_MS
+}
+
 // Observations, then nowcast frames after the last observation.
 // nowIndex is the last observed frame (-1 without observations).
 function radarFrames(obsText, nowcastText) {
@@ -1826,6 +1843,8 @@ if (typeof module !== "undefined") {
     tileUrl: tileUrl,
     radarTileFile: radarTileFile,
     radarFrameId: radarFrameId,
+    RADAR_MAX_AGE_MS: RADAR_MAX_AGE_MS,
+    radarUsable: radarUsable,
     parseTileIndex: parseTileIndex,
     radarFrames: radarFrames,
     tileRunId: tileRunId,

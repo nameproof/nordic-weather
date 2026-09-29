@@ -13,6 +13,7 @@ Item {
     property string directory: Qt.resolvedUrl("frames").toString().replace(/^file:\/\//, "")
 
     Component { id: imagesComponent; Weather.RadarImages {} }
+    Component { id: spyComponent; SignalSpy {} }
 
     function loop(key, times) {
       return { key: key, viewKey: "test", nowIndex: 0, frames: times.map(function(t) { return { timeMs: t } }) }
@@ -116,6 +117,16 @@ Item {
       buffers.loop = Object.assign({}, partial, { key: "p", ready: 5 })
       tryVerify(function() { return String(buffers.coverage.source).endsWith("f_3_test.png") })
       tryCompare(buffers.coverage, "status", Image.Ready)
+    }
+
+    // A frame whose file is gone (cleaned from the cache) is reported, so
+    // the service can reload instead of holding on it.
+    function test_missing_frame_is_reported() {
+      ignoreWarning(/.*Cannot open:.*f_98_test.png/)
+      var buffers = makeImages(loop("gone", [98, 99]))
+      var spy = createTemporaryObject(spyComponent, tests, { target: buffers, signalName: "failed" })
+      spy.wait(2000)
+      compare(spy.signalArguments[0][0], "gone")
     }
 
     function test_single_preview_and_unload() {

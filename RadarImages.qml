@@ -31,6 +31,8 @@ Item {
   readonly property var coverage: front && front.coverage.status === Image.Ready ? front.coverage : current
 
   signal prepared(string token, bool ready)
+  // A frame's image file couldn't be loaded (e.g. cleaned from the cache).
+  signal failed(string key)
 
   function report() { prepared(token, ready) }
   onTokenChanged: Qt.callLater(report)
@@ -95,6 +97,8 @@ Item {
       readonly property alias coverage: coverageImage
       readonly property bool imagesReady: current.status === Image.Ready && upcoming.status === Image.Ready
       onImagesReadyChanged: Qt.callLater(root.promote)
+      readonly property bool imagesFailed: current.status === Image.Error || upcoming.status === Image.Error
+      onImagesFailedChanged: if (imagesFailed) root.failed(snapshotKey)
 
       function urlFor(frame) {
         return frame ? "file://" + root.directory + "/" + Model.radarFrameFile(frame, loop.viewKey) : ""

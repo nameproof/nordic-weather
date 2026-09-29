@@ -33,15 +33,18 @@ test("Quickshell: service publishes, pauses, replaces loops, loads progressively
     }
     const tile = path.join(dir, "tile.png")
     execFileSync("magick", ["-size", "256x256", "xc:blue", tile])
+    // Index times in the harness are offsets from a recent base (older
+    // radar isn't shown); the harness reads it from RADAR_TEST_BASE.
+    const base = Math.floor(Date.now() / 300000) * 300000 - 1800000
     for (const timeMs of [1200000, 1500000])
       for (const t of M.viewTiles(M.radarView(view), 256, 192))
-        fs.copyFileSync(tile, path.join(tiles, M.radarTileFile(t, { timeMs })))
+        fs.copyFileSync(tile, path.join(tiles, M.radarTileFile(t, { timeMs: base + timeMs })))
     const runtime = path.join(dir, "runtime")
     fs.mkdirSync(runtime, { mode: 0o700 })
     const result = spawnSync("qs", ["-p", path.join(dir, "shell.qml"), "--no-color"], {
       encoding: "utf8", timeout: 20000,
       env: { ...process.env, QT_QPA_PLATFORM: "offscreen", QT_QUICK_BACKEND: "software",
-        XDG_RUNTIME_DIR: runtime, XDG_CACHE_HOME: cache, QML_DISABLE_DISK_CACHE: "1" }
+        XDG_RUNTIME_DIR: runtime, XDG_CACHE_HOME: cache, QML_DISABLE_DISK_CACHE: "1", RADAR_TEST_BASE: String(base) }
     })
     const output = (result.stdout || "") + (result.stderr || "")
     assert.equal(result.status, 0, (result.error || "") + output)

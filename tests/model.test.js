@@ -907,3 +907,25 @@ test("requests are throttled per service", () => {
   for (const kind of ["forecast", "nowcast", "sun", "moon"]) assert.equal(M.requestService(kind), "met")
   for (const kind of ["yrObs", "yrNow", "lightning"]) assert.equal(M.requestService(kind), "yr")
 })
+
+test("radar is shown only while recent and not awaiting a refresh", () => {
+  const now = Date.parse("2026-09-29T08:30:00Z")
+  const radar = (newestMinutesAgo) => ({ nowIndex: 1, frames: [
+    { timeMs: now - (newestMinutesAgo + 5) * 60000 }, { timeMs: now - newestMinutesAgo * 60000 }, { timeMs: now + 300000 }] })
+  assert.equal(M.radarUsable(radar(5), now, false), true)
+  assert.equal(M.radarUsable(radar(30), now, false), true)
+  // Last night's loop after a sleep: not shown.
+  assert.equal(M.radarUsable(radar(31), now, false), false)
+  assert.equal(M.radarUsable(radar(600), now, false), false)
+  // Waiting for the refresh started on opening: nothing yet.
+  assert.equal(M.radarUsable(radar(5), now, true), false)
+  assert.equal(M.radarUsable({ frames: [], nowIndex: -1 }, now, false), false)
+  assert.equal(M.radarUsable(null, now, false), false)
+})
+
+test("place search: duplicate results are dropped (list keys must be unique)", () => {
+  const r = { name: "Göteborg", latitude: 57.70716, longitude: 11.96679, admin1: "Västra Götaland", country: "Sverige" }
+  const out = M.parseGeocodingResults(JSON.stringify({ results: [r, r, Object.assign({}, r, { latitude: 57.8 })] }))
+  assert.equal(out.length, 2)
+  assert.equal(new Set(out.map((x) => x.key)).size, 2)
+})

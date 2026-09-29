@@ -103,8 +103,16 @@ Panel {
   // smaller box shows a smaller area; the service computes the view for it.
   readonly property int yrMapWidth: Math.max(1, Math.round(radarBox.width) - 2)
   readonly property int yrMapHeight: Math.max(1, Math.round(radarBox.height) - 2)
-  onYrMapWidthChanged: reportViewer()
-  onYrMapHeightChanged: reportViewer()
+  // A resize changes width and height one after the other: report once,
+  // after both (a Timer rather than Qt.callLater, so no report can run
+  // after this panel is gone).
+  onYrMapWidthChanged: sizeReport.restart()
+  onYrMapHeightChanged: sizeReport.restart()
+  Timer {
+    id: sizeReport
+    interval: 0
+    onTriggered: root.reportViewer()
+  }
 
   readonly property string viewerId: "panel-" + Math.floor(Math.random() * 1e9)
 
@@ -1345,6 +1353,7 @@ Panel {
             onPrepared: function(token, ready) {
               if (root.service) root.service.radarImagesPrepared(token, ready)
             }
+            onFailed: function(key) { if (root.service) root.service.radarImagesFailed(key) }
           }
           // Stands in for a missing image (e.g. right after a zoom): a
           // ShaderEffect warns about any texture property that is null.

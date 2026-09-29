@@ -83,7 +83,7 @@ Scope {
   onAnyOpenChanged: if (anyOpen) {
     locationFile.reload()
     rebuild()
-    maybeFetch(false)
+    Qt.callLater(maybeFetch, false)
   }
 
   // ---------------------------------------------------------------- state
@@ -124,7 +124,9 @@ Scope {
     console.log("nordic-weather: connectivity " + connectivity)
     if (connectivity === NetworkConnectivity.Full) {
       failures = ({})
-      maybeFetch(false)
+      // Later: `offline` (derived from connectivity) may not have caught up
+      // yet in this handler, and would skip the fetch (e.g. after a wake).
+      Qt.callLater(maybeFetch, false)
     }
   }
 
@@ -144,8 +146,10 @@ Scope {
     }
   }
 
+  // Both read `location` itself rather than hasLocation: they run from
+  // onLocationChanged, where that derived value may not have caught up.
   function requestUrls() {
-    if (!hasLocation) return null
+    if (!Model.hasCoordinates(location)) return null
     var loc = locationForRequests()
     var now = Date.now()
     return {
@@ -224,7 +228,7 @@ Scope {
   // force: middle click / IPC refresh. Skips the Expires wait, but still
   // sends If-Modified-Since, so an unchanged forecast costs a 304.
   function maybeFetch(force) {
-    if (!hasLocation || !cacheLoaded || offline) return
+    if (!Model.hasCoordinates(location) || !cacheLoaded || offline) return
     var now = Date.now()
     var urls = requestUrls()
     if (now >= backoffUntil.met) {
@@ -277,7 +281,6 @@ Scope {
       + (response.headers.expires ? ", expires " + response.headers.expires : ""))
     if (response.status === 203)
       console.warn("nordic-weather: " + kind + " API version is deprecated: " + url)
-
     if (response.status === 200 || response.status === 203 || response.status === 304) {
       var unreadable = response.status !== 304 && (
         ((kind === "forecast" || kind === "nowcast") && !Model.parseTimeseries(response.body))
@@ -312,6 +315,15 @@ Scope {
     }
 
     if (kind === "forecast" && current) finishSavingLocation()
+    // An awaited radar index is answered only once it is stored: ended
+    // earlier, the radar would briefly count as usable with the old index
+    // and start loading from it.
+    if ((kind === "yrObs" || kind === "yrNow") && yrAwaiting[kind]) {
+      var awaiting = Object.assign({}, yrAwaiting)
+      awaiting[kind] = false
+      yrClockMs = now
+      yrAwaiting = awaiting
+    }
     rebuild()
   }
 
@@ -454,8 +466,59 @@ Scope {
   onYrRadarActiveChanged: if (yrRadarActive) {
     yrPlayhead = { frame: 0, tick: yrPlayhead.tick }
     yrPaused = false
-    maybeFetch(false)
+    var now = Date.now()
+    yrClockMs = now
+    // Index refreshes due now are waited for before anything shows, so a
+    // loop from before (minutes or a night ago) never plays first. Decided
+    // before any request starts, so nothing loads from the old index.
+    var canFetch = !offline && cacheLoaded && now >= backoffUntil.yr
+    yrAwaiting = { yrObs: canFetch && yrIndexDue("yrObs", now), yrNow: canFetch && yrIndexDue("yrNow", now) }
+    if (yrAwaiting.yrObs || yrAwaiting.yrNow) yrAwaitTimeout.restart()
+    if (!yrRadarUsable) dropYrLoops()
+    // Later: the map view derived from this panel may not have caught up.
+    Qt.callLater(maybeFetch, false)
     Qt.callLater(maybeComposeYrFrames)
+  }
+
+  function yrIndexDue(kind, now) {
+    return isDue(kind, kind === "yrObs" ? Model.YR_RADAR_OBS_INDEX : Model.YR_RADAR_NOWCAST_INDEX, now)
+  }
+
+  // Radar index refreshes awaited since the radar opened (see above). A
+  // response of any kind ends the wait; so does the timeout, so a hung
+  // request can't keep the radar empty.
+  property var yrAwaiting: ({ yrObs: false, yrNow: false })
+  Timer {
+    id: yrAwaitTimeout
+    interval: 8000
+    onTriggered: root.yrAwaiting = { yrObs: false, yrNow: false }
+  }
+  // Wall-clock time for the radar's age check (Model.radarUsable), set on
+  // opening and every minute.
+  property double yrClockMs: Date.now()
+  readonly property bool yrRadarUsable: Model.radarUsable(yrIndex, yrClockMs, yrAwaiting.yrObs || yrAwaiting.yrNow)
+  onYrRadarUsableChanged: if (!yrRadarUsable) dropYrLoops()
+
+  // Also forgets what was assembled, so the loops are built again from
+  // disk (instant where the frames are there) once the radar is usable:
+  // the refreshed index is often the very same frames.
+  function dropYrLoops() {
+    yrShown = null
+    yrPending = null
+    yrPreview = null
+    yrComposedKey = ""
+    yrComposedCount = 0
+  }
+
+  // Frames of a loop went missing on disk (e.g. cleaned up): drop the loops
+  // built on them and check tiles and frames again, rather than hold on a
+  // frame that can't load.
+  function radarImagesFailed(key) {
+    console.warn("nordic-weather: radar frame images missing, reloading them")
+    dropYrLoops()
+    yrRadarDoneKey = ""
+    yrRadarNowDoneKey = ""
+    maybeDownloadYrTiles()
   }
 
   // ---------------------------------------------------------------- radar: yr.no map
@@ -493,7 +556,10 @@ Scope {
   readonly property double yrNowMs: yrDisplay.frames.length && yrDisplay.nowIndex >= 0
     ? yrDisplay.frames[yrDisplay.nowIndex].timeMs : 0
 
-  readonly property var yrRadar: Model.radarFrames(cache.yrObs ? cache.yrObs.body : "", cache.yrNow ? cache.yrNow.body : "")
+  // The radar indexes as cached, and what may be shown of them: nothing
+  // while too old or while their refresh is awaited (yrRadarUsable).
+  readonly property var yrIndex: Model.radarFrames(cache.yrObs ? cache.yrObs.body : "", cache.yrNow ? cache.yrNow.body : "")
+  readonly property var yrRadar: yrRadarUsable ? yrIndex : ({ frames: [], nowIndex: -1 })
   // The map's real pixel size, from the panel showing it.
   readonly property int yrMapWidth: radarViewer ? radarViewer.width : 0
   readonly property int yrMapHeight: radarViewer ? radarViewer.height : 0
@@ -555,10 +621,12 @@ Scope {
   // of frames can play.
   readonly property string yrRadarKey: yrRadar.frames.length && yrViewKey !== "" && yrRadarTiles.length
     ? yrViewKey + "|" + Model.radarFramesKey(yrRadar.frames) : ""
+  // Later, not at once: the key changes while the values derived from the
+  // same index (yrNowFrame, …) may still hold the old ones.
   onYrRadarKeyChanged: {
     yrRetry.stop()
     yrRetryCount = 0
-    maybeDownloadYrTiles()
+    Qt.callLater(maybeDownloadYrTiles)
   }
   // A batch counts as downloaded only once all its tiles are on disk; until
   // then it is retried with a growing delay.
@@ -655,7 +723,7 @@ Scope {
   }
 
   function maybeDownloadYrTiles() {
-    if (!yrRadarActive || yrRadarKey === "" || yrRadarProc.running || yrRetry.running
+    if (!yrRadarActive || yrRadarKey === "" || !yrNowFrame || yrRadarProc.running || yrRetry.running
         || Date.now() < backoffUntil.yr) return
     if (yrRadarNowDoneKey !== yrRadarKey) {
       yrRadarProc.key = yrRadarKey + "|now"
@@ -907,6 +975,7 @@ Scope {
   SystemClock {
     precision: SystemClock.Minutes
     onDateChanged: {
+      root.yrClockMs = Date.now()
       root.rebuild()
       root.maybeFetch(false)
     }

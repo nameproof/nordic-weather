@@ -10,6 +10,12 @@ Scope {
   property int savedFrame: 0
   property int savedTick: 0
   property var savedSet: null
+  property var seenKeys: []
+  property var downloadChecks: []
+  // Index times are offsets from here (set by service.test.js, which also
+  // names the tile files), so the newest observation is recent: older radar
+  // isn't shown (Model.radarUsable).
+  property double base: Number(Quickshell.env("RADAR_TEST_BASE"))
 
   // Exercise the actual service, processes and worker without network
   // requests or changing the user's location/settings.
@@ -17,8 +23,15 @@ Scope {
     id: service
     location: ({ name: "Test", latitude: 57.93, longitude: 12.53 })
     function maybeFetch(force) {}
-    function maybeDownloadYrTiles() {}
+    function yrIndexDue(kind, now) { return false }
+    // Records whether the newest observation is known when downloads are
+    // checked (no downloads run in the test).
+    function maybeDownloadYrTiles() { if (yrRadarKey !== "") test.downloadChecks.push(yrNowFrame !== null) }
     function setLocationIfChanged(next) {}
+  }
+  Connections {
+    target: service
+    function onYrRadarKeyChanged() { if (service.yrRadarKey !== "") test.seenKeys.push(service.yrRadarKey) }
   }
   Weather.RadarImages {
     id: images
@@ -43,7 +56,7 @@ Scope {
     service.yrPending = null
     service.yrPreview = null
     service.cache = Object.assign({}, service.cache, { yrObs: { body: JSON.stringify({ times: times.map(function(t) {
-      return { time: new Date(t).toISOString(), tiles: { png: "https://invalid.test/{z}/{x}/{y}.png" } }
+      return { time: new Date(test.base + t).toISOString(), tiles: { png: "https://invalid.test/{z}/{x}/{y}.png" } }
     }) }) } })
     service.yrRadarNowDoneKey = service.yrRadarKey
     service.maybeComposeYrFrames()
@@ -83,7 +96,7 @@ Scope {
       index([1200000, 1500000])
       next()
     } else if (stage === 5 && service.yrPreviewValid && images.ready) {
-      check(!service.yrPlaying && service.yrCurrentFrame.timeMs === 1500000, "show the assembled observation until frames can play")
+      check(!service.yrPlaying && service.yrCurrentFrame.timeMs === test.base + 1500000, "show the assembled observation until frames can play")
       // The first batch arrives: it is assembled and shown at once.
       service.yrRadarDoneKey = service.yrRadarKey
       service.yrRadarDoneCount = 1
@@ -99,12 +112,51 @@ Scope {
     } else if (stage === 7 && service.yrShownValid && !service.yrShown.partial && service.yrImagesReady) {
       check(service.yrShown.frames.length === 2 && service.yrPlayLimit === 2, "the complete loop replaces the partial one")
       check(images.front === savedSet, "a loop that only grew keeps its images")
+      // Opening with an index refresh under way drops the loop; the refresh
+      // brings the very same frames: the loop must come back, not stay empty.
+      service.yrAwaiting = { yrObs: true, yrNow: false }
+      check(!service.yrShownValid, "no loop while the refresh is awaited")
+      service.yrAwaiting = { yrObs: false, yrNow: false }
+      next()
+    } else if (stage === 8 && service.yrShownValid && !service.yrShown.partial && service.yrImagesReady) {
+      // The awaited refresh arrives with a newer index: the radar goes from
+      // waiting straight to the new frames, never loading from the old ones
+      // on the way (their first frame is at 20 min).
+      seenKeys = []
+      downloadChecks = []
+      service.yrAwaiting = { yrObs: true, yrNow: false }
+      var body = JSON.stringify({ times: [1500000, 1800000].map(function(t) {
+        return { time: new Date(test.base + t).toISOString(), tiles: { png: "https://invalid.test/{z}/{x}/{y}.png" } }
+      }) })
+      service.handleResponse("yrObs", "https://invalid.test/available.json", "HTTP/2 200\r\ncontent-type: application/json\r\n\r\n" + body)
+      check(service.yrRadarUsable, "the stored refresh ends the wait")
+      check(seenKeys.length > 0 && seenKeys.every(function(k) { return k.indexOf(String(test.base + 1200000)) < 0 }),
+        "nothing loads from the old index while the refresh arrives")
+      next()
+    } else if (stage === 9 && downloadChecks.length > 0) {
+      check(downloadChecks.every(function(known) { return known }), "downloads start with the new index's newest observation")
       index([1800000])
       next()
-    } else if (stage === 8 && service.yrRetryCount === 1) {
+    } else if (stage === 10 && service.yrRetryCount === 1) {
       next()
-    } else if (stage === 9 && Date.now() - since > 200) {
+    } else if (stage === 11 && Date.now() - since > 200) {
       check(service.yrRetryCount === 1 && service.yrRadarNowDoneKey === "", "failed preview must back off and recheck its tiles")
+      // Radar from hours ago (the computer slept): a loop left in memory
+      // isn't played when the radar opens, and nothing is shown of it.
+      index([-10800000, -10500000])
+      service.yrShown = loop("last night", [0, 300000])
+      viewer(false)
+      viewer(true)
+      check(!service.yrRadarUsable && service.yrRadar.frames.length === 0, "old radar is not shown")
+      check(!service.yrShownValid && service.yrImageLoop === null, "a loop from before isn't played on opening")
+      // Frames that vanish from disk: the loop is dropped and tiles and
+      // frames are checked again, instead of holding on a frame forever.
+      service.yrShown = loop("vanished", [0, 300000])
+      service.yrRadarNowDoneKey = "done"
+      service.yrRadarDoneKey = "done"
+      service.radarImagesFailed("vanished")
+      check(!service.yrShownValid && service.yrRadarNowDoneKey === "" && service.yrRadarDoneKey === "",
+        "missing frames reload instead of freezing")
       console.log("RADAR_SERVICE_PASS")
       Qt.quit()
     }
