@@ -10,19 +10,19 @@ Includes a weather radar that is lazy-loaded. This keeps the forecast
 light. Radar playback loads in batches like streaming platforms so
 it's still fast. Rain clouds and lightning are seen on the radar map.
 
-The radars map is locked to the Nordic region as seen in the video. It
+The radars map is locked to the Nordic region as seen in the screenshots. It
 can be used for other locations but the radar map and cloud data is
-limited to this region.
+limited to this region. Locations works the same way the built-in Omarchy
+weather widget does, just with added favorites.
 
 Follows Omarchy's theming colors, including the Radar!
 
 Languages: Swedish, Norwegian, Danish, Finnish or English, following the system
 locale; English for anything else.
 
-Enabling the plugin puts it in the built-in widget's place in the bar.
-Disabling or removing it brings the built-in back. That is what
-`omarchy.clonedFrom: "omarchy.weather"` in the manifest does, so it is kept
-on purpose: it also routes `omarchy.weather` commands and keybinds here.
+<img width="1215" height="898" alt="screenshot-2026-09-29_12-15-56-cropped" src="https://github.com/user-attachments/assets/4551c485-867e-451f-8977-b1164179a2df" />
+<img width="1215" height="898" alt="screenshot-2026-09-29_12-15-28-cropped" src="https://github.com/user-attachments/assets/4ae46c34-307f-4d34-963b-9cc370fdbff1" />
+<img width="1215" height="898" alt="screenshot-2026-09-29_12-17-15-cropped" src="https://github.com/user-attachments/assets/9c9b6283-bd6d-47e2-8252-276dcad05874" />
 
 ## Install
 
@@ -34,7 +34,14 @@ Remove it with `omarchy plugin remove io.github.nameproof.nordic-weather`.
 
 Needs `curl` and ImageMagick (for the radar), both included in Omarchy.
 
+Enabling the plugin puts it in the built-in widget's place in the bar.
+Disabling or removing it brings the built-in back. That is what
+`omarchy.clonedFrom: "omarchy.weather"` in the manifest does, so it is kept
+on purpose: it also routes `omarchy.weather` commands and keybinds here.
+
 ## Use
+
+Just click around, some advanced motions do exist however:
 
 | Action | Result |
 |---|---|
