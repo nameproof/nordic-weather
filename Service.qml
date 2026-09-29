@@ -21,6 +21,7 @@ Scope {
   // plugin) and our manifest.
   property var shell: null
   property var manifest: null
+  readonly property string userAgent: Model.userAgent(manifest)
 
   readonly property string pluginId: Model.PLUGIN_ID
 
@@ -252,7 +253,7 @@ Scope {
     var entry = entryFor(kind)
     var lastModified = entry && entry.key === url ? entry.lastModified : ""
     proc.url = url
-    proc.command = Model.curlCommand(url, lastModified, kind === "forecast" ? 15 : 10)
+    proc.command = Model.curlCommand(url, lastModified, kind === "forecast" ? 15 : 10, userAgent)
     proc.running = true
   }
 
@@ -384,7 +385,7 @@ Scope {
 
   function startGeocode() {
     geocodeActiveQuery = geocodePendingQuery
-    geocodeProc.command = ["curl", "-fsS", "--max-time", "5", "-A", Model.USER_AGENT,
+    geocodeProc.command = ["curl", "-fsS", "--max-time", "5", "-A", root.userAgent,
                            Model.geocodeUrl(geocodeActiveQuery, root.lang)]
     geocodeProc.running = true
   }
@@ -496,7 +497,8 @@ Scope {
   // Wall-clock time for the radar's age check (Model.radarUsable), set on
   // opening and every minute.
   property double yrClockMs: Date.now()
-  readonly property bool yrRadarUsable: Model.radarUsable(yrIndex, yrClockMs, yrAwaiting.yrObs || yrAwaiting.yrNow)
+  readonly property bool yrRadarUsable: Model.radarUsable(yrIndex, yrClockMs, yrAwaiting.yrObs || yrAwaiting.yrNow,
+                                                            cache.yrObs ? cache.yrObs.fetchedMs : NaN)
   onYrRadarUsableChanged: if (!yrRadarUsable) dropYrLoops()
 
   // Also forgets what was assembled, so the loops are built again from
@@ -505,7 +507,6 @@ Scope {
   function dropYrLoops() {
     yrShown = null
     yrPending = null
-    yrPreview = null
     yrComposedKey = ""
     yrComposedCount = 0
   }
@@ -517,7 +518,6 @@ Scope {
     console.warn("nordic-weather: radar frame images missing, reloading them")
     dropYrLoops()
     yrRadarDoneKey = ""
-    yrRadarNowDoneKey = ""
     maybeDownloadYrTiles()
   }
 
@@ -616,13 +616,13 @@ Scope {
   }
 
   // Identifies the full tile set: the map view (which tiles) and every
-  // frame (which run and time). The latest observation downloads first
-  // (≈25 tiles) and is assembled as a still preview until the first batch
-  // of frames can play.
+  // frame (which run and time). Nothing shows until the first batch of
+  // frames is assembled; it then plays from the loop's start (a still of
+  // the newest frame first would jump back 1½ h once playback began).
   readonly property string yrRadarKey: yrRadar.frames.length && yrViewKey !== "" && yrRadarTiles.length
     ? yrViewKey + "|" + Model.radarFramesKey(yrRadar.frames) : ""
-  // Later, not at once: the key changes while the values derived from the
-  // same index (yrNowFrame, …) may still hold the old ones.
+  // Later, not at once: the key changes while other values derived from
+  // the same index (yrRadar, …) may still hold the old ones.
   onYrRadarKeyChanged: {
     yrRetry.stop()
     yrRetryCount = 0
@@ -637,8 +637,6 @@ Scope {
     onTriggered: root.maybeDownloadYrTiles()
   }
   readonly property int yrRadarReadyCount: yrRadarKey !== "" && yrRadarDoneKey === yrRadarKey ? yrRadarDoneCount : 0
-  property string yrRadarNowDoneKey: ""
-  readonly property var yrNowFrame: yrRadar.frames.length ? yrRadar.frames[Math.max(0, yrRadar.nowIndex)] : null
 
   // Published loops are immutable. A complete loop replacing a working one
   // is published at a frame boundary. On a first
@@ -648,15 +646,12 @@ Scope {
   // newest until the next batch extends it.
   property var yrShown: null
   property var yrPending: null
-  property var yrPreview: null
   readonly property bool yrShownValid: yrShown !== null && yrShown.viewKey === yrViewKey
-  readonly property bool yrPreviewValid: yrPreview !== null && yrPreview.viewKey === yrViewKey
-  readonly property var yrDisplay: yrShownValid ? yrShown : yrPreviewValid ? yrPreview : yrRadar
-  readonly property var yrImageLoop: yrShownValid ? yrShown : yrPreviewValid ? yrPreview : null
+  readonly property var yrDisplay: yrShownValid ? yrShown : yrRadar
+  readonly property var yrImageLoop: yrShownValid ? yrShown : null
   readonly property int yrPlayLimit: yrShownValid ? loopReady(yrShown) : 0
   readonly property bool yrPlaying: yrShownValid && yrPlayLimit > 1
-  readonly property var yrCurrentFrame: yrShownValid ? yrShown.frames[Math.min(yrFrame, yrPlayLimit - 1)]
-    : yrPreviewValid ? yrPreview.frames[0] : null
+  readonly property var yrCurrentFrame: yrShownValid ? yrShown.frames[Math.min(yrFrame, yrPlayLimit - 1)] : null
 
   function loopReady(loop) {
     return loop.ready === undefined ? loop.frames.length : loop.ready
@@ -705,35 +700,27 @@ Scope {
     var n = yrRadar.frames.length
     var composed = yrComposedKey === yrFramesKey ? yrComposedCount : 0
     var progressive = !(yrShownValid && !yrShown.partial)
-    var upTo = yrRadarReadyCount >= n ? n : progressive ? yrRadarReadyCount : 0
-    var preview = progressive && upTo === 0 && !yrShownValid && !yrPreviewValid
-      && yrRadarNowDoneKey === yrRadarKey && yrNowFrame !== null
-    if (!preview && (upTo === 0 || upTo <= composed)) return
-    var frames = preview ? [yrNowFrame] : yrRadar.frames
-    var ready = preview ? 1 : upTo
-    var key = yrFramesKey + (preview ? "|preview" : ready < n ? "|" + ready : "")
+    var ready = yrRadarReadyCount >= n ? n : progressive ? yrRadarReadyCount : 0
+    if (ready === 0 || ready <= composed) return
+    var key = yrFramesKey + (ready < n ? "|" + ready : "")
     var rv = Model.radarView(mapViewState)
     yrFramesProc.key = key
-    yrFramesProc.preview = preview
-    yrFramesProc.loop = { frames: frames, ready: ready, partial: !preview && ready < n, base: preview ? key : yrFramesKey, radarKey: yrRadarKey,
-                         nowIndex: preview ? 0 : yrRadar.nowIndex, viewKey: yrViewKey, key: key }
+    yrFramesProc.loop = { frames: yrRadar.frames, ready: ready, partial: ready < n, base: yrFramesKey, radarKey: yrRadarKey,
+                         nowIndex: yrRadar.nowIndex, viewKey: yrViewKey, key: key }
     yrFramesProc.command = Model.frameComposeCommand(tilesDir, yrMapWidth, yrMapHeight, rv.px,
-      Model.frameComposeSpecs(yrRadarTiles, frames.slice(0, ready), yrViewKey))
+      Model.frameComposeSpecs(yrRadarTiles, yrRadar.frames.slice(0, ready), yrViewKey))
     yrFramesProc.running = true
   }
 
   function maybeDownloadYrTiles() {
-    if (!yrRadarActive || yrRadarKey === "" || !yrNowFrame || yrRadarProc.running || yrRetry.running
+    if (!yrRadarActive || yrRadarKey === "" || !yrRadar.frames.length || yrRadarProc.running || yrRetry.running
         || Date.now() < backoffUntil.yr) return
-    if (yrRadarNowDoneKey !== yrRadarKey) {
-      yrRadarProc.key = yrRadarKey + "|now"
-      yrRadarProc.command = Model.tileDownloadCommand(tilesDir, Model.radarDownloads(yrRadarTiles, [yrNowFrame]))
-    } else if (yrRadarReadyCount < yrRadar.frames.length) {
+    if (yrRadarReadyCount < yrRadar.frames.length) {
       var from = yrRadarReadyCount
       var to = Math.min(yrRadar.frames.length, from + yrBatchFrames)
       yrRadarProc.key = yrRadarKey
       yrRadarProc.upTo = to
-      yrRadarProc.command = Model.tileDownloadCommand(tilesDir, Model.radarDownloads(yrRadarTiles, yrRadar.frames.slice(from, to)))
+      yrRadarProc.command = Model.tileDownloadCommand(tilesDir, Model.radarDownloads(yrRadarTiles, yrRadar.frames.slice(from, to)), userAgent)
     } else {
       maybeComposeYrFrames()
       return
@@ -901,10 +888,6 @@ Scope {
       if (!ok || missing > 0) {
         root.yrRetryCount++
         yrRetry.restart()
-      } else if (key.endsWith("|now")) {
-        root.yrRetryCount = 0
-        root.yrRadarNowDoneKey = key.slice(0, -4)
-        Qt.callLater(root.maybeComposeYrFrames)
       } else {
         root.yrRetryCount = 0
         Qt.callLater(root.maybeComposeYrFrames)
@@ -918,26 +901,20 @@ Scope {
   TileProcess {
     id: yrFramesProc
     property var loop: null
-    property bool preview: false
     onFinished: (key, ok, total, made) => {
       console.log("nordic-weather: yr radar frames assembled, " + made + "/" + total)
       if (ok && made === total) {
-        if (preview) {
-          if (loop.viewKey === root.yrViewKey) root.yrPreview = loop
-        } else {
-          root.yrComposedKey = loop.base
-          root.yrComposedCount = loop.ready
-          // A partial loop only stands in while nothing complete plays.
-          if (loop.viewKey === root.yrViewKey && (!loop.partial || !(root.yrShownValid && !root.yrShown.partial))) {
-            root.yrPending = loop
-            root.publishYrLoop(false)
-          }
+        root.yrComposedKey = loop.base
+        root.yrComposedCount = loop.ready
+        // A partial loop only stands in while nothing complete plays.
+        if (loop.viewKey === root.yrViewKey && (!loop.partial || !(root.yrShownValid && !root.yrShown.partial))) {
+          root.yrPending = loop
+          root.publishYrLoop(false)
         }
       } else if (loop.radarKey === root.yrRadarKey) {
         // A tile went missing after its batch was counted: check the
         // downloads again (only missing tiles are fetched) after a delay.
         root.yrRadarDoneKey = ""
-        if (preview) root.yrRadarNowDoneKey = ""
         root.yrRetryCount++
         yrRetry.restart()
       }

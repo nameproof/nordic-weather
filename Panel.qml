@@ -1259,7 +1259,7 @@ Panel {
               required property var modelData
               x: Math.round(1 + root.rulerPad + modelData.index * stampRow.step - width / 2)
               // Clear of the status text when it shows.
-              visible: radarStatus.text === "" || x + width < radarStatus.x - Style.space(8)
+              visible: statusRow.width === 0 || x + width < statusRow.x - Style.space(8)
               textFormat: Text.PlainText
               text: modelData.stamp
               color: modelData.forecast ? Color.accent : modelData.level === 1 ? root.dim : root.faint
@@ -1268,17 +1268,47 @@ Panel {
             }
           }
 
-          Text {
-            id: radarStatus
+          Row {
+            id: statusRow
             anchors.right: parent.right
             anchors.rightMargin: Style.space(4)
-            textFormat: Text.PlainText
-            // While a zoom level's first frames are still downloading (a
-            // first visit fetches several hundred tiles), or paused.
-            text: !root.yrPlaying ? root.t.radarLoading : root.yrPaused ? "⏸" : ""
-            color: root.faint
-            font.family: root.fontFamily
-            font.pixelSize: Style.font.caption
+            spacing: Style.space(6)
+
+            // Frames missing from yr.no's loop (an outage): a warning, with
+            // the explanation on hover, so the jumps in time aren't taken
+            // for a bug.
+            Text {
+              id: gapWarning
+              readonly property string note: root.yrRadarActive ? Model.radarGapNote(root.yrDisplay.frames, root.lang) : ""
+              visible: note !== ""
+              textFormat: Text.PlainText
+              text: "\uf071"  // nf-fa-warning
+              color: gapHover.hovered ? root.fg : root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              HoverHandler { id: gapHover }
+              // Right-aligned to the icon: it sits at the panel's right edge,
+              // so a centred tooltip would stick out of the panel.
+              PanelToolTip {
+                x: gapWarning.width - width
+                visible: gapHover.hovered
+                delay: 0
+                text: gapWarning.note
+                fontFamily: root.fontFamily
+              }
+            }
+            Text {
+              id: radarStatus
+              textFormat: Text.PlainText
+              // While a zoom level's first frames are still downloading (a
+              // first visit fetches several hundred tiles), or paused; while
+              // playing, when yr.no's radar runs late ("Radar från 13:15").
+              text: !root.yrPlaying ? root.t.radarLoading : root.yrPaused ? "⏸"
+                : Model.radarDelayNote(root.service ? root.service.yrNowMs : 0, root.service ? root.service.yrClockMs : 0, root.lang)
+              color: root.faint
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+            }
           }
         }
       }

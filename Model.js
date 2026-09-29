@@ -13,8 +13,12 @@
 // zone inside the shell, TZ=... under node).
 
 var PLUGIN_ID = "io.github.nameproof.nordic-weather"
-var VERSION = "0.1.0"
-var USER_AGENT = PLUGIN_ID + "/" + VERSION + " github.com/nameproof/nordic-weather"
+// Identifies us to MET and yr.no (MET's terms ask for it): id and version
+// from the manifest the shell hands the service, plus where to reach us.
+function userAgent(manifest) {
+  var version = manifest && manifest.version ? manifest.version : "dev"
+  return PLUGIN_ID + "/" + version + " github.com/nameproof/nordic-weather"
+}
 var MET_BASE = "https://api.met.no/weatherapi"
 var HOUR_MS = 3600 * 1000
 var DAY_MS = 24 * HOUR_MS
@@ -86,6 +90,8 @@ var STRINGS = {
     radar: "Radar",
     radarLoading: "Hämtar radar…",
     radarNow: "Nu",
+    radarFrom: "Radar från {time}",
+    radarGaps: "Luckor i yr.no:s radar – tiden kan hoppa mellan bilder",
     forecastWord: "Prognos",
     symbols: {
       clearsky: "Klart",
@@ -143,6 +149,8 @@ var STRINGS = {
     radar: "Radar",
     radarLoading: "Henter radar…",
     radarNow: "Nå",
+    radarFrom: "Radar fra {time}",
+    radarGaps: "Hull i yr.no-radaren – tiden kan hoppe mellom bildene",
     forecastWord: "Prognose",
     symbols: {
       clearsky: "Klarvær",
@@ -199,6 +207,8 @@ var STRINGS = {
     radar: "Radar",
     radarLoading: "Henter radar…",
     radarNow: "Nu",
+    radarFrom: "Radar fra {time}",
+    radarGaps: "Huller i yr.no's radar – tiden kan springe mellem billederne",
     forecastWord: "Prognose",
     symbols: {
       clearsky: "Klart",
@@ -258,6 +268,8 @@ var STRINGS = {
     radar: "Tutka",
     radarLoading: "Ladataan tutkaa…",
     radarNow: "Nyt",
+    radarFrom: "Tutka klo {time}",
+    radarGaps: "Aukkoja yr.no:n tutkassa – aika voi hypätä kuvien välillä",
     forecastWord: "Ennuste",
     symbols: {
       clearsky: "Selkeää",
@@ -314,6 +326,8 @@ var STRINGS = {
     radar: "Radar",
     radarLoading: "Loading radar…",
     radarNow: "Now",
+    radarFrom: "Radar from {time}",
+    radarGaps: "Gaps in yr.no's radar: expect time jumps between frames",
     forecastWord: "Forecast",
     symbols: {
       clearsky: "Clear sky",
@@ -485,9 +499,9 @@ function requestService(kind) {
   return kind === "yrObs" || kind === "yrNow" || kind === "lightning" ? "yr" : "met"
 }
 
-function curlCommand(url, lastModified, maxTime) {
+function curlCommand(url, lastModified, maxTime, agent) {
   var cmd = ["curl", "-sS", "--compressed", "--max-time", String(maxTime || 10),
-             "-A", USER_AGENT, "-D", "-"]
+             "-A", agent, "-D", "-"]
   if (lastModified) cmd.push("-H", "If-Modified-Since: " + lastModified)
   cmd.push(url)
   return cmd
@@ -1541,17 +1555,40 @@ function parseTileIndex(text) {
   return out
 }
 
-// How old the newest radar observation may be for a loop to be shown.
-// Older radar (the computer slept, the network is down) is worse than an
-// empty map: it looks current but isn't.
+// How long ago our copy of the radar index may have been fetched for its
+// loop to be shown. An older copy (the computer slept, the network is
+// down) is worse than an empty map: it looks current but isn't. What
+// counts is our fetch, not the newest observation: when yr.no itself runs
+// late, the index just fetched is still the freshest radar there is.
 var RADAR_MAX_AGE_MS = 30 * 60000
+// yr.no's newest observation older than this is shown as late
+// (radarDelayNote).
+var RADAR_LATE_MS = 15 * 60000
 
-// Whether a frame list (radarFrames) may be shown at nowMs: it has an
-// observation no older than RADAR_MAX_AGE_MS, and no refresh of its index
-// is still awaited (awaiting: the radar opened with a refresh under way).
-function radarUsable(radar, nowMs, awaiting) {
+// Whether a frame list (radarFrames) may be shown at nowMs: its index was
+// fetched (fetchedMs) no more than RADAR_MAX_AGE_MS ago, it has an
+// observation, and no refresh is still awaited (awaiting: the radar opened
+// with a refresh under way).
+function radarUsable(radar, nowMs, awaiting, fetchedMs) {
   if (awaiting || !radar || radar.nowIndex < 0 || !radar.frames.length) return false
-  return nowMs - radar.frames[radar.nowIndex].timeMs <= RADAR_MAX_AGE_MS
+  return isNum(fetchedMs) && nowMs - fetchedMs <= RADAR_MAX_AGE_MS
+}
+
+// A note when frames are missing from yr.no's loop (neighbours more than
+// 1.5 steps apart, e.g. an outage), so the jumps in time aren't taken for a
+// bug; "" otherwise.
+function radarGapNote(frames, lang) {
+  for (var i = 1; i < (frames || []).length; i++)
+    if (frames[i].timeMs - frames[i - 1].timeMs > 1.5 * 5 * 60000) return strings(lang).radarGaps
+  return ""
+}
+
+// "Radar från 13:15" when yr.no's newest observation (newestMs) is more than
+// RADAR_LATE_MS old, so the ruler's "now" isn't taken for the present;
+// "" otherwise.
+function radarDelayNote(newestMs, nowMs, lang) {
+  if (!isNum(newestMs) || !(newestMs > 0) || nowMs - newestMs <= RADAR_LATE_MS) return ""
+  return fill(strings(lang).radarFrom, { time: localClock(newestMs) })
 }
 
 // Observations, then nowcast frames after the last observation.
@@ -1771,7 +1808,7 @@ function mapLabels(places, view, width, height, lang, charPx, markerName) {
 // tiles older than 2 h.
 // Prints "<fetched> <missing>": missing counts the tiles still not on disk
 // afterwards (failed, or listed in the index before yr.no published them).
-function tileDownloadCommand(dir, downloads) {
+function tileDownloadCommand(dir, downloads, agent) {
   var script = 'dir=$1; ua=$2; shift 2\n'
     + 'mkdir -p "$dir"\n'
     + 'args=(); parts=(); files=()\n'
@@ -1790,7 +1827,7 @@ function tileDownloadCommand(dir, downloads) {
     + 'for f in "${files[@]}"; do [[ -s $dir/$f ]] || missing=$((missing + 1)); done\n'
     + 'find "$dir" -name "r_*.png" -mmin +120 -delete 2>/dev/null\n'
     + 'echo "${#parts[@]} $missing"\n'
-  var cmd = ["bash", "-c", script, "bash", dir, USER_AGENT]
+  var cmd = ["bash", "-c", script, "bash", dir, agent]
   for (var i = 0; i < downloads.length; i++) cmd.push(downloads[i].url, downloads[i].file)
   return cmd
 }
@@ -1823,7 +1860,6 @@ function notification(view) {
 if (typeof module !== "undefined") {
   module.exports = {
     PLUGIN_ID: PLUGIN_ID,
-    VERSION: VERSION,
     YR_RADAR_OBS_INDEX: YR_RADAR_OBS_INDEX,
     YR_RADAR_NOWCAST_INDEX: YR_RADAR_NOWCAST_INDEX,
     YR_RADAR_ZOOM: YR_RADAR_ZOOM,
@@ -1845,6 +1881,8 @@ if (typeof module !== "undefined") {
     radarFrameId: radarFrameId,
     RADAR_MAX_AGE_MS: RADAR_MAX_AGE_MS,
     radarUsable: radarUsable,
+    radarDelayNote: radarDelayNote,
+    radarGapNote: radarGapNote,
     parseTileIndex: parseTileIndex,
     radarFrames: radarFrames,
     tileRunId: tileRunId,
@@ -1862,7 +1900,7 @@ if (typeof module !== "undefined") {
     frameComposeCommand: frameComposeCommand,
     tileDownloadCommand: tileDownloadCommand,
     NOWCAST_BACKGROUND_MS: NOWCAST_BACKGROUND_MS,
-    USER_AGENT: USER_AGENT,
+    userAgent: userAgent,
     STRINGS: STRINGS,
     langFor: langFor,
     strings: strings,

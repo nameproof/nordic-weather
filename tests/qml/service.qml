@@ -24,9 +24,9 @@ Scope {
     location: ({ name: "Test", latitude: 57.93, longitude: 12.53 })
     function maybeFetch(force) {}
     function yrIndexDue(kind, now) { return false }
-    // Records whether the newest observation is known when downloads are
+    // Records whether the index's frames are known when downloads are
     // checked (no downloads run in the test).
-    function maybeDownloadYrTiles() { if (yrRadarKey !== "") test.downloadChecks.push(yrNowFrame !== null) }
+    function maybeDownloadYrTiles() { if (yrRadarKey !== "") test.downloadChecks.push(yrRadar.frames.length > 0) }
     function setLocationIfChanged(next) {}
   }
   Connections {
@@ -51,14 +51,13 @@ Scope {
              frames: times.map(function(t) { return { timeMs: t, runId: "", forecast: false } }) }
   }
   function viewer(open) { service.updateViewer("test", { open: open, radarOpen: open, width: 256, height: 192 }) }
-  function index(times) {
+  // fetchedMs: when our copy was fetched (now unless given).
+  function index(times, fetchedMs) {
     service.yrShown = null
     service.yrPending = null
-    service.yrPreview = null
     service.cache = Object.assign({}, service.cache, { yrObs: { body: JSON.stringify({ times: times.map(function(t) {
       return { time: new Date(test.base + t).toISOString(), tiles: { png: "https://invalid.test/{z}/{x}/{y}.png" } }
-    }) }) } })
-    service.yrRadarNowDoneKey = service.yrRadarKey
+    }) }), fetchedMs: fetchedMs === undefined ? Date.now() : fetchedMs } })
     service.maybeComposeYrFrames()
   }
 
@@ -95,8 +94,11 @@ Scope {
       viewer(true)
       index([1200000, 1500000])
       next()
-    } else if (stage === 5 && service.yrPreviewValid && images.ready) {
-      check(!service.yrPlaying && service.yrCurrentFrame.timeMs === test.base + 1500000, "show the assembled observation until frames can play")
+    } else if (stage === 5 && Date.now() - since > 200) {
+      // Nothing shows before the first frames are assembled (no still of
+      // the newest frame that playback would then jump back from).
+      check(!service.yrShownValid && service.yrImageLoop === null && service.yrCurrentFrame === null,
+        "nothing shows until the first frames are assembled")
       // The first batch arrives: it is assembled and shown at once.
       service.yrRadarDoneKey = service.yrRadarKey
       service.yrRadarDoneCount = 1
@@ -134,16 +136,21 @@ Scope {
         "nothing loads from the old index while the refresh arrives")
       next()
     } else if (stage === 9 && downloadChecks.length > 0) {
-      check(downloadChecks.every(function(known) { return known }), "downloads start with the new index's newest observation")
+      check(downloadChecks.every(function(known) { return known }), "downloads start with the new index's frames")
+      // A frame whose tiles are gone after its batch was counted: assembly
+      // fails, backs off and checks the tiles again.
       index([1800000])
+      service.yrRadarDoneKey = service.yrRadarKey
+      service.yrRadarDoneCount = 1
+      service.maybeComposeYrFrames()
       next()
     } else if (stage === 10 && service.yrRetryCount === 1) {
       next()
     } else if (stage === 11 && Date.now() - since > 200) {
-      check(service.yrRetryCount === 1 && service.yrRadarNowDoneKey === "", "failed preview must back off and recheck its tiles")
+      check(service.yrRetryCount === 1 && service.yrRadarDoneKey === "", "failed assembly must back off and recheck its tiles")
       // Radar from hours ago (the computer slept): a loop left in memory
       // isn't played when the radar opens, and nothing is shown of it.
-      index([-10800000, -10500000])
+      index([-10800000, -10500000], Date.now() - 10800000)
       service.yrShown = loop("last night", [0, 300000])
       viewer(false)
       viewer(true)
@@ -152,10 +159,9 @@ Scope {
       // Frames that vanish from disk: the loop is dropped and tiles and
       // frames are checked again, instead of holding on a frame forever.
       service.yrShown = loop("vanished", [0, 300000])
-      service.yrRadarNowDoneKey = "done"
       service.yrRadarDoneKey = "done"
       service.radarImagesFailed("vanished")
-      check(!service.yrShownValid && service.yrRadarNowDoneKey === "" && service.yrRadarDoneKey === "",
+      check(!service.yrShownValid && service.yrRadarDoneKey === "",
         "missing frames reload instead of freezing")
       console.log("RADAR_SERVICE_PASS")
       Qt.quit()

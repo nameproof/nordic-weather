@@ -129,8 +129,8 @@ Item {
       compare(spy.signalArguments[0][0], "gone")
     }
 
-    function test_single_preview_and_unload() {
-      var buffers = makeImages(loop("preview", [4]))
+    function test_single_frame_and_unload() {
+      var buffers = makeImages(loop("single", [4]))
       tryCompare(buffers, "ready", true)
       compare(buffers.current, buffers.upcoming)
       buffers.loop = null

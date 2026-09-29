@@ -131,8 +131,8 @@ test("coordinates are truncated to 4 decimals in URLs", () => {
 })
 
 test("curl command identifies itself and sends If-Modified-Since", () => {
-  const cmd = M.curlCommand("https://x", "Sat, 26 Sep 2026 12:44:00 GMT")
-  assert.equal(cmd[cmd.indexOf("-A") + 1], M.USER_AGENT)
+  const cmd = M.curlCommand("https://x", "Sat, 26 Sep 2026 12:44:00 GMT", 10, "agent/1")
+  assert.equal(cmd[cmd.indexOf("-A") + 1], "agent/1")
   assert.ok(cmd.includes("If-Modified-Since: Sat, 26 Sep 2026 12:44:00 GMT"))
   assert.ok(!M.curlCommand("https://x", "").includes("-H"))
 })
@@ -636,7 +636,7 @@ for a in "$@"; do
 done
 `, { mode: 0o755 })
   const run = (downloads) => {
-    const cmd = M.tileDownloadCommand(dir, downloads)
+    const cmd = M.tileDownloadCommand(dir, downloads, "agent/1")
     return execFileSync(cmd[0], cmd.slice(1), { env: { ...process.env, PATH: bin + ":" + process.env.PATH } }).toString().trim()
   }
   fs.writeFileSync(path.join(dir, "r_0_6_9_9.png"), "cached")
@@ -894,13 +894,14 @@ test("favourites: toggle, remove, rows and stepping", () => {
   assert.equal(M.stepFavorite([], a, 1), null)
 })
 
-// The User-Agent (MET's terms) carries the version; it must match the
-// manifest's, as must the plugin id.
-test("version and id match the manifest", () => {
+// The User-Agent (MET's terms) carries the manifest's id and version; the
+// plugin id is also a constant (it names the cache before the manifest
+// arrives), so it must match.
+test("user agent and id come from the manifest", () => {
   const manifest = JSON.parse(repoFile("manifest.json"))
-  assert.equal(M.VERSION, manifest.version)
   assert.equal(M.PLUGIN_ID, manifest.id)
-  assert.ok(M.USER_AGENT.startsWith(manifest.id + "/" + manifest.version + " "))
+  assert.equal(M.userAgent(manifest), manifest.id + "/" + manifest.version + " github.com/nameproof/nordic-weather")
+  assert.ok(M.userAgent(null).startsWith(manifest.id + "/dev "))
 })
 
 test("requests are throttled per service", () => {
@@ -908,19 +909,30 @@ test("requests are throttled per service", () => {
   for (const kind of ["yrObs", "yrNow", "lightning"]) assert.equal(M.requestService(kind), "yr")
 })
 
-test("radar is shown only while recent and not awaiting a refresh", () => {
+test("radar is shown only while our copy is recent and not awaiting a refresh", () => {
   const now = Date.parse("2026-09-29T08:30:00Z")
-  const radar = (newestMinutesAgo) => ({ nowIndex: 1, frames: [
-    { timeMs: now - (newestMinutesAgo + 5) * 60000 }, { timeMs: now - newestMinutesAgo * 60000 }, { timeMs: now + 300000 }] })
-  assert.equal(M.radarUsable(radar(5), now, false), true)
-  assert.equal(M.radarUsable(radar(30), now, false), true)
-  // Last night's loop after a sleep: not shown.
-  assert.equal(M.radarUsable(radar(31), now, false), false)
-  assert.equal(M.radarUsable(radar(600), now, false), false)
+  const radar = { nowIndex: 1, frames: [{ timeMs: now - 3000000 }, { timeMs: now - 2700000 }, { timeMs: now + 300000 }] }
+  const min = 60000
+  assert.equal(M.radarUsable(radar, now, false, now - 5 * min), true)
+  assert.equal(M.radarUsable(radar, now, false, now - 30 * min), true)
+  // Last night's copy after a sleep, or offline for long: not shown.
+  assert.equal(M.radarUsable(radar, now, false, now - 31 * min), false)
+  assert.equal(M.radarUsable(radar, now, false, now - 600 * min), false)
+  assert.equal(M.radarUsable(radar, now, false, NaN), false)
+  // yr.no running late (newest observation 45 min old) but just fetched: shown.
+  assert.equal(M.radarUsable(radar, now, false, now - min), true)
   // Waiting for the refresh started on opening: nothing yet.
-  assert.equal(M.radarUsable(radar(5), now, true), false)
-  assert.equal(M.radarUsable({ frames: [], nowIndex: -1 }, now, false), false)
-  assert.equal(M.radarUsable(null, now, false), false)
+  assert.equal(M.radarUsable(radar, now, true, now), false)
+  assert.equal(M.radarUsable({ frames: [], nowIndex: -1 }, now, false, now), false)
+  assert.equal(M.radarUsable(null, now, false, now), false)
+})
+
+test("radar delay note: only when yr.no's newest observation is late", () => {
+  const now = Date.parse("2026-09-29T11:57:00Z")
+  assert.equal(M.radarDelayNote(now - 10 * 60000, now, "sv"), "")
+  assert.equal(M.radarDelayNote(Date.parse("2026-09-29T11:15:00Z"), now, "sv"), "Radar från 13:15")
+  assert.equal(M.radarDelayNote(Date.parse("2026-09-29T11:15:00Z"), now, "en"), "Radar from 13:15")
+  assert.equal(M.radarDelayNote(0, now, "sv"), "")
 })
 
 test("place search: duplicate results are dropped (list keys must be unique)", () => {
@@ -928,4 +940,13 @@ test("place search: duplicate results are dropped (list keys must be unique)", (
   const out = M.parseGeocodingResults(JSON.stringify({ results: [r, r, Object.assign({}, r, { latitude: 57.8 })] }))
   assert.equal(out.length, 2)
   assert.equal(new Set(out.map((x) => x.key)).size, 2)
+})
+
+test("radar gap note: only when frames are missing from the loop", () => {
+  const at = (minutes) => minutes.map((m) => ({ timeMs: m * 60000 }))
+  assert.equal(M.radarGapNote(at([0, 5, 10, 15]), "en"), "")
+  // yr.no's outage: 13:15 → 13:55 with nothing between.
+  assert.equal(M.radarGapNote(at([0, 5, 10, 50, 55]), "en"), "Gaps in yr.no's radar: expect time jumps between frames")
+  assert.equal(M.radarGapNote(at([0, 5, 10, 50]), "sv"), "Luckor i yr.no:s radar – tiden kan hoppa mellan bilder")
+  assert.equal(M.radarGapNote([], "en"), "")
 })

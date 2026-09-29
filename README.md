@@ -31,13 +31,13 @@ omarchy plugin add https://github.com/nameproof/nordic-weather.git --enable
 ```
 
 Remove it with `omarchy plugin remove io.github.nameproof.nordic-weather`.
+Optionally remove the cache that holds up to ~100MB:
+`rm -rf ~/.cache/io.github.nameproof.nordic-weather`
 
 Needs `curl` and ImageMagick (for the radar), both included in Omarchy.
 
-Enabling the plugin puts it in the built-in widget's place in the bar.
-Disabling or removing it brings the built-in back. That is what
-`omarchy.clonedFrom: "omarchy.weather"` in the manifest does, so it is kept
-on purpose: it also routes `omarchy.weather` commands and keybinds here.
+Enabling the plugin puts it in the built-in weather widget's place in the bar.
+Disabling or removing it brings the built-in back.
 
 ## Use
 
