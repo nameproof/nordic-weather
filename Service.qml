@@ -385,8 +385,7 @@ Scope {
 
   function startGeocode() {
     geocodeActiveQuery = geocodePendingQuery
-    geocodeProc.command = ["curl", "-fsS", "--max-time", "5", "-A", root.userAgent,
-                           Model.geocodeUrl(geocodeActiveQuery, root.lang)]
+    geocodeProc.command = Model.geocodeCommand(geocodeActiveQuery, root.lang, root.userAgent)
     geocodeProc.running = true
   }
 

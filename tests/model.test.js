@@ -137,6 +137,41 @@ test("curl command identifies itself and sends If-Modified-Since", () => {
   assert.ok(!M.curlCommand("https://x", "").includes("-H"))
 })
 
+test("every request caps the response size", () => {
+  const cap = (cmd) => cmd[cmd.indexOf("--max-filesize") + 1]
+  assert.equal(cap(M.curlCommand("https://x", "", 10, "agent/1")), String(M.MAX_RESPONSE_BYTES))
+  const geocode = M.geocodeCommand("Bergen", "nb", "agent/1")
+  assert.equal(cap(geocode), String(M.MAX_RESPONSE_BYTES))
+  assert.equal(geocode[geocode.indexOf("-A") + 1], "agent/1")
+  assert.equal(geocode.at(-1), M.geocodeUrl("Bergen", "nb"))
+})
+
+test("an oversized compressed response is cut off at the cap", { skip: !fs.existsSync("/usr/bin/curl") && "curl not installed" }, async () => {
+  const http = require("node:http")
+  const zlib = require("node:zlib")
+  const { spawn } = require("node:child_process")
+  // ~40 KB on the wire, 4× the cap once decompressed.
+  const body = zlib.gzipSync(Buffer.alloc(4 * M.MAX_RESPONSE_BYTES, "0"))
+  const server = http.createServer((req, res) => {
+    res.writeHead(200, { "Content-Encoding": "gzip", "Content-Type": "application/json" })
+    res.end(body)
+  })
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve))
+  try {
+    const cmd = M.curlCommand("http://127.0.0.1:" + server.address().port + "/", "", 10, "agent/1")
+    const { code, bytes } = await new Promise((resolve) => {
+      const proc = spawn(cmd[0], cmd.slice(1))
+      let bytes = 0
+      proc.stdout.on("data", (chunk) => { bytes += chunk.length })
+      proc.on("close", (code) => resolve({ code, bytes }))
+    })
+    assert.equal(code, 63)  // curl: maximum file size exceeded
+    assert.ok(bytes <= M.MAX_RESPONSE_BYTES + 4096, bytes + " bytes")
+  } finally {
+    server.close()
+  }
+})
+
 test("HTTP response parsing and cache policy", () => {
   const raw = "HTTP/2 200 \r\nexpires: Sat, 26 Sep 2026 13:14:28 GMT\r\nLast-Modified: Sat, 26 Sep 2026 12:44:00 GMT\r\n\r\n{\"a\":1}"
   const r = M.parseHttpResponse(raw)
@@ -640,6 +675,8 @@ test("tile download fetches only missing tiles and never keeps failures", () => 
   fs.writeFileSync(path.join(bin, "curl"), `#!/bin/bash
 out=""
 for a in "$@"; do
+  [[ $prev == --max-filesize ]] && echo "max $a" >> "${log}"
+  [[ $a == --remove-on-error ]] && echo "remove-on-error" >> "${log}"
   if [[ $prev == -o ]]; then out=$a
   elif [[ $a == http* ]]; then echo "$a" >> "${log}"; [[ $a == *missing* ]] || printf 'PNG' > "$out"
   fi
@@ -657,7 +694,9 @@ done
     { url: "http://t/missing", file: "r_2_6_1_1.png" },
   ])
   assert.equal(out, "2 1")  // two were not cached; one of them failed and is still missing
-  assert.deepEqual(fs.readFileSync(log, "utf8").trim().split("\n"), ["http://t/r1", "http://t/missing"])
+  // Capped per tile, and a transfer cut off at the cap leaves no partial file.
+  assert.deepEqual(fs.readFileSync(log, "utf8").trim().split("\n"),
+                   ["max " + M.MAX_TILE_BYTES, "remove-on-error", "http://t/r1", "http://t/missing"])
   assert.equal(fs.readFileSync(path.join(dir, "r_0_6_9_9.png"), "utf8"), "cached")
   assert.equal(fs.readFileSync(path.join(dir, "r_1_6_1_1.png"), "utf8"), "PNG")
   assert.ok(!fs.existsSync(path.join(dir, "r_2_6_1_1.png")))
