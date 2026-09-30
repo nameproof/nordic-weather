@@ -160,7 +160,7 @@ Scope {
       // frames are checked again, instead of holding on a frame forever.
       service.yrShown = loop("vanished", [0, 300000])
       service.yrRadarDoneKey = "done"
-      service.radarImagesFailed("vanished")
+      service.radarImagesFailed()
       check(!service.yrShownValid && service.yrRadarDoneKey === "",
         "missing frames reload instead of freezing")
       console.log("RADAR_SERVICE_PASS")

@@ -1022,7 +1022,6 @@ function precipGlyph(rows) {
 function buildHourlyDays(forecast, nowMs, hourStep, dayCount, lang) {
   var step = Math.max(1, hourStep || 3)
   var todayStart = localDayStart(nowMs, 0)
-  var fromMs = Math.floor(nowMs / HOUR_MS) * HOUR_MS
   var lastHourlyMs = -Infinity
   for (var h = 0; h < forecast.steps.length; h++)
     if (forecast.steps[h].period1) lastHourlyMs = Math.max(lastHourlyMs, forecast.steps[h].ms)
@@ -1035,7 +1034,9 @@ function buildHourlyDays(forecast, nowMs, hourStep, dayCount, lang) {
     var rows = []
     for (var i = 0; i < forecast.steps.length; i++) {
       var s = forecast.steps[i]
-      if (s.ms < start || s.ms >= end || s.ms < fromMs) continue
+      // Upcoming times only: a row goes once its time is reached (the
+      // hero shows the present).
+      if (s.ms < start || s.ms >= end || s.ms <= nowMs) continue
       if (sixHour) {
         if (!s.period6 || new Date(s.ms).getUTCHours() % 6 !== 0) continue
       } else {
@@ -1052,8 +1053,8 @@ function buildHourlyDays(forecast, nowMs, hourStep, dayCount, lang) {
 // One row per local day. Precipitation sums non-overlapping periods (1 h
 // where available, then 6 h). Temperatures span instants plus 6-hour
 // min/max. The icon is the 6-hour symbol closest to local noon.
-// `skipStarts`: local day starts already shown as hourly sections.
-function buildLongRange(forecast, nowMs, dayCount, lang, skipStarts) {
+// Days from the local day start `fromStart` on (today when left out).
+function buildLongRange(forecast, nowMs, dayCount, lang, fromStart) {
   var todayStart = localDayStart(nowMs, 0)
   var byDay = {}
   var order = []
@@ -1097,7 +1098,7 @@ function buildLongRange(forecast, nowMs, dayCount, lang, skipStarts) {
   for (var k = 0; k < order.length && out.length < dayCount; k++) {
     var entry = byDay[order[k]]
     if (!entry.hasPeriod || !isFinite(entry.min)) continue
-    if (skipStarts && skipStarts.indexOf(entry.start) !== -1) continue
+    if (isNum(fromStart) && entry.start < fromStart) continue
     out.push({
       start: entry.start,
       day: dayShortName(entry.start, todayStart, lang),
@@ -1242,9 +1243,14 @@ function buildView(input) {
     text: view.current.temp === null ? view.current.icon : view.current.icon + " " + view.current.temp + "°"
   }
   view.nowcast = buildNowcast(input.nowcast, nowMs, lang)
-  view.days = buildHourlyDays(forecast, nowMs, settings.hourStep || 3, settings.hourlyDays || 3, lang)
+  // The first hourlyDays calendar days (from today) are hourly sections,
+  // the days after them the overview: one split in time, so a day is in
+  // one or the other whatever its rows (today has none left late in the
+  // evening, and is then in neither).
+  var hourlyDays = settings.hourlyDays || 3
+  view.days = buildHourlyDays(forecast, nowMs, settings.hourStep || 3, hourlyDays, lang)
   view.longRange = buildLongRange(forecast, nowMs, settings.longRangeDays === undefined ? 10 : settings.longRangeDays, lang,
-                                  view.days.map(function(day) { return day.start }))
+                                  localDayStart(nowMs, hourlyDays))
   view.longRangeScale = longRangeScale(view.longRange)
   addListKeys(view)
   return view
@@ -1678,8 +1684,8 @@ function mapFrameLabel(frame, lang) {
   return (frame.forecast ? strings(lang).forecastWord + " " : "") + localClock(frame.timeMs)
 }
 
-// Identifies a frame list: every frame's run and time, so two lists never
-// share a key (runs are republished with new ids and times shift).
+// Identifies a frame list by its frames' ids (radarFrameId), so two lists
+// share a key only when they show the same images.
 function radarFramesKey(frames) {
   var parts = []
   for (var i = 0; i < (frames || []).length; i++) parts.push(radarFrameId(frames[i]))

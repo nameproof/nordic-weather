@@ -495,7 +495,7 @@ Scope {
     onTriggered: root.yrAwaiting = { yrObs: false, yrNow: false }
   }
   // Wall-clock time for the radar's age check (Model.radarUsable), set on
-  // opening and every minute.
+  // opening, when an awaited index arrives and every minute.
   property double yrClockMs: Date.now()
   readonly property bool yrRadarUsable: Model.radarUsable(yrIndex, yrClockMs, yrAwaiting.yrObs || yrAwaiting.yrNow,
                                                             cache.yrObs ? cache.yrObs.fetchedMs : NaN)
@@ -514,7 +514,7 @@ Scope {
   // Frames of a loop went missing on disk (e.g. cleaned up): drop the loops
   // built on them and check tiles and frames again, rather than hold on a
   // frame that can't load.
-  function radarImagesFailed(key) {
+  function radarImagesFailed() {
     console.warn("nordic-weather: radar frame images missing, reloading them")
     dropYrLoops()
     yrRadarDoneKey = ""
@@ -616,7 +616,7 @@ Scope {
   }
 
   // Identifies the full tile set: the map view (which tiles) and every
-  // frame (which run and time). Nothing shows until the first batch of
+  // frame (Model.radarFrameId). Nothing shows until the first batch of
   // frames is assembled; it then plays from the loop's start (a still of
   // the newest frame first would jump back 1½ h once playback began).
   readonly property string yrRadarKey: yrRadar.frames.length && yrViewKey !== "" && yrRadarTiles.length
@@ -627,6 +627,7 @@ Scope {
     yrRetry.stop()
     yrRetryCount = 0
     Qt.callLater(maybeDownloadYrTiles)
+    Qt.callLater(maybeComposeYrFrames)
   }
   // A batch counts as downloaded only once all its tiles are on disk; until
   // then it is retried with a growing delay.
@@ -639,11 +640,11 @@ Scope {
   readonly property int yrRadarReadyCount: yrRadarKey !== "" && yrRadarDoneKey === yrRadarKey ? yrRadarDoneCount : 0
 
   // Published loops are immutable. A complete loop replacing a working one
-  // is published at a frame boundary. On a first
-  // open or new zoom nothing works yet, so frames are assembled batch by
-  // batch as their tiles arrive and play as they come: a partial loop, of
-  // which the first `ready` frames are assembled; playback waits on the
-  // newest until the next batch extends it.
+  // is published at a frame boundary. On a first open or new zoom nothing
+  // works yet, so frames are assembled batch by batch as their tiles
+  // arrive and play as they come: a partial loop, of which the first
+  // `ready` frames are assembled; playback waits on the newest until the
+  // next batch extends it.
   property var yrShown: null
   property var yrPending: null
   readonly property bool yrShownValid: yrShown !== null && yrShown.viewKey === yrViewKey
@@ -689,23 +690,21 @@ Scope {
   // nothing complete of this view is on screen; otherwise once all of a
   // loop's tiles are there.
   readonly property string yrViewKey: Model.mapViewKey(mapViewState, yrMapWidth, yrMapHeight)
-  readonly property string yrFramesKey: yrRadarKey
   // How many frames (a prefix) of the loop yrComposedKey are assembled.
   property string yrComposedKey: ""
   property int yrComposedCount: 0
-  onYrFramesKeyChanged: Qt.callLater(maybeComposeYrFrames)
 
   function maybeComposeYrFrames() {
     if (!yrRadarActive || yrViewKey === "" || yrFramesProc.running) return
     var n = yrRadar.frames.length
-    var composed = yrComposedKey === yrFramesKey ? yrComposedCount : 0
+    var composed = yrComposedKey === yrRadarKey ? yrComposedCount : 0
     var progressive = !(yrShownValid && !yrShown.partial)
     var ready = yrRadarReadyCount >= n ? n : progressive ? yrRadarReadyCount : 0
     if (ready === 0 || ready <= composed) return
-    var key = yrFramesKey + (ready < n ? "|" + ready : "")
+    var key = yrRadarKey + (ready < n ? "|" + ready : "")
     var rv = Model.radarView(mapViewState)
     yrFramesProc.key = key
-    yrFramesProc.loop = { frames: yrRadar.frames, ready: ready, partial: ready < n, base: yrFramesKey, radarKey: yrRadarKey,
+    yrFramesProc.loop = { frames: yrRadar.frames, ready: ready, partial: ready < n, base: yrRadarKey,
                          nowIndex: yrRadar.nowIndex, viewKey: yrViewKey, key: key }
     yrFramesProc.command = Model.frameComposeCommand(tilesDir, yrMapWidth, yrMapHeight, rv.px,
       Model.frameComposeSpecs(yrRadarTiles, yrRadar.frames.slice(0, ready), yrViewKey))
@@ -911,7 +910,7 @@ Scope {
           root.yrPending = loop
           root.publishYrLoop(false)
         }
-      } else if (loop.radarKey === root.yrRadarKey) {
+      } else if (loop.base === root.yrRadarKey) {
         // A tile went missing after its batch was counted: check the
         // downloads again (only missing tiles are fetched) after a delay.
         root.yrRadarDoneKey = ""

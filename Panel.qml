@@ -1383,7 +1383,7 @@ Panel {
             onPrepared: function(token, ready) {
               if (root.service) root.service.radarImagesPrepared(token, ready)
             }
-            onFailed: function(key) { if (root.service) root.service.radarImagesFailed(key) }
+            onFailed: if (root.service) root.service.radarImagesFailed()
           }
           // Stands in for a missing image (e.g. right after a zoom): a
           // ShaderEffect warns about any texture property that is null.

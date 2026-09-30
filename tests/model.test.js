@@ -306,6 +306,11 @@ test("hourly days: 3 h steps, then 6 h steps past the hourly range", () => {
   assert.deepEqual(days[0].rows.map((r) => r.hour), ["15", "18", "21"])
   assert.deepEqual(days[1].rows.map((r) => r.hour), ["00", "03", "06", "09", "12", "15", "18", "21"])
   for (const day of days) for (const r of day.rows) assert.ok(r.ms >= Date.parse("2026-09-26T12:00:00Z"))
+  // Upcoming times only: the 15 row shows until 15:00 local, then goes.
+  const today = (iso) => M.buildHourlyDays(alingsas, Date.parse(iso), 3, 3, "sv")[0].rows.map((r) => r.hour)
+  assert.deepEqual(today("2026-09-26T12:57:00Z"), ["15", "18", "21"])
+  assert.deepEqual(today("2026-09-26T13:00:00Z"), ["18", "21"])
+  assert.deepEqual(today("2026-09-26T13:57:00Z"), ["18", "21"])
   // The day after tomorrow is always 6-hour rows, even when a later
   // forecast run covers it hourly (simulated: every step gets a 1 h period).
   const allHourly = { steps: alingsas.steps.map((st) => Object.assign({}, st, { period1: st.period1 || st.period6 })) }
@@ -423,6 +428,12 @@ test("full view model", () => {
   const twoHourly = M.buildView({ forecast: alingsas, location: { name: "A", latitude: 57.93, longitude: 12.53 },
                                   lang: "sv", nowMs: NOW, settings: { hourlyDays: 2 } })
   assert.equal(twoHourly.longRange[0].day, "Mån")
+  // Late in the evening today has no hourly rows left, and isn't listed in
+  // the overview either: the hourly sections are Sun and Mon, then Tue.
+  const late = M.buildView({ forecast: alingsas, location: { name: "A", latitude: 57.93, longitude: 12.53 },
+                             lang: "sv", nowMs: Date.parse("2026-09-26T20:30:00Z"), settings: { hourlyDays: 3 } })
+  assert.deepEqual(late.days.map((d) => d.title.split(" ")[0]), ["Imorgon", "Måndag"])
+  assert.equal(late.longRange[0].day, "Tis")
   assert.ok(view.longRangeScale.min <= view.longRangeScale.max)
   assert.equal(view.updatedAt, "14:30")
   const note = M.notification(view)
