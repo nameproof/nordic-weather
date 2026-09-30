@@ -69,9 +69,9 @@ loaded while open). `Model.js` holds the pure logic as plain JavaScript.
 ```sh
 npm test                    # model, shader build, Qt and service tests
 RADAR_RENDER_TESTS=1 npm test # also check shader pixels with offscreen OpenGL
-scripts/build-shaders       # compile shaders/*.frag to .qsb (dev-install runs it)
-scripts/dev-install         # copy into ~/.config/omarchy/plugins/ (hot-reloads)
-scripts/dev-install --enable
+scripts/build-shaders       # compile shaders/*.frag to .qsb (dev-sync runs it)
+scripts/dev-sync            # copy into ~/.config/omarchy/plugins/ (hot-reloads)
+scripts/dev-sync --enable
 scripts/lint                # qmllint against the installed Omarchy shell
 ```
 
@@ -83,8 +83,7 @@ the theme. Rebuilding them from OpenStreetMap needs ~6 GB of downloads
 (regions in `scripts/basemap-regions.txt`) into the git-ignored `build/`:
 
 ```sh
-uv venv build/.venv && uv pip install --python build/.venv/bin/python osmium shapely pyshp pillow numpy
-build/.venv/bin/python scripts/build-basemap.py   # download, extract, render, places
+uv run scripts/build-basemap.py   # download, extract, render, places
 ```
 
 ## Credits

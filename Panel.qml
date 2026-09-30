@@ -614,6 +614,7 @@ Panel {
 
           // ---- Favourites (empty field) or search suggestions.
           Column {
+            id: searchDropdown
             visible: root.editingLocation && !root.savingLocation
               && (root.dropdownRows.length > 0 || (!root.showingFavorites && root.geocodeSearched))
             width: parent.width
@@ -1721,6 +1722,28 @@ Panel {
                 }
               }
             }
+          }
+        }
+      }
+
+      // While searching, a right click outside the field and its dropdown
+      // cancels, like Escape. It only watches: whatever was clicked still
+      // gets the click, and a drag isn't a click.
+      Item {
+        anchors.fill: parent
+        PointHandler {
+          enabled: root.editingLocation && root.hasLocation
+          acceptedButtons: Qt.RightButton
+          property point pressedAt
+          onActiveChanged: {
+            if (active) {
+              pressedAt = point.scenePosition
+              return
+            }
+            var at = point.scenePosition
+            if (Math.abs(at.x - pressedAt.x) > Style.space(8) || Math.abs(at.y - pressedAt.y) > Style.space(8)) return
+            var inside = function(item) { return item.visible && item.contains(item.mapFromItem(null, at)) }
+            if (!inside(locationField) && !inside(searchDropdown)) root.cancelEditingLocation()
           }
         }
       }

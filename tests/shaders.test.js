@@ -1,5 +1,5 @@
 // The compiled .qsb files must match their GLSL source: run
-// scripts/build-shaders (scripts/dev-install does it automatically).
+// scripts/build-shaders (scripts/dev-sync does it automatically).
 const test = require("node:test")
 const assert = require("node:assert/strict")
 const fs = require("node:fs")

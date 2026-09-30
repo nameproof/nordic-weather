@@ -1,8 +1,12 @@
-#!/usr/bin/env python3
+#!/usr/bin/env -S uv run --script
+# /// script
+# dependencies = ["osmium", "shapely", "pyshp", "pillow", "numpy"]
+# ///
 """Build the radar map's base map from OpenStreetMap data.
 
 Maintainer tool, not needed to run the plugin. Reads OSM extracts and the
-simplified land polygons from build/osm/ (see build/regions.txt), and writes:
+simplified land polygons from build/osm/ (regions in
+scripts/basemap-regions.txt), and writes:
 
   map/tiles/{z}/{x}/{y}.png  Web Mercator tiles holding *masks*, not colours:
                              R = water, G = roads (brighter = bigger road),
@@ -10,8 +14,8 @@ simplified land polygons from build/osm/ (see build/regions.txt), and writes:
                              them into theme colours at display time.
   map/places.json            Cities and towns for labels drawn by the panel.
 
-Run with the build venv (osmium, shapely, pyshp, pillow, numpy):
-  build/.venv/bin/python scripts/build-basemap.py [--download] [--extract] [--render] [--places]
+Run with uv, which provides the dependencies listed above:
+  uv run scripts/build-basemap.py [--download] [--extract] [--render] [--places]
 (no flags = all four; downloads ≈6 GB into build/osm/ and skips files it has).
 --places alone rewrites map/places.json from the downloaded extracts (a
 few minutes), e.g. after adding a label language.
