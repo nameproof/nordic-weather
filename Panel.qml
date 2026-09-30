@@ -1303,9 +1303,10 @@ Panel {
               // While a zoom level's first frames are still downloading (a
               // first visit fetches several hundred tiles), or paused; while
               // playing, when yr.no's radar runs late ("Radar från 13:15").
-              text: !root.yrPlaying ? root.t.radarLoading : root.yrPaused ? "⏸"
+              text: !root.yrPlaying ? root.t.radarLoading : root.yrPaused ? "\uf04c"  // nf-fa-pause
                 : Model.radarDelayNote(root.service ? root.service.yrNowMs : 0, root.service ? root.service.yrClockMs : 0, root.lang)
-              color: root.faint
+              // The pause sign in the brightest text colour, so it's noticed.
+              color: root.yrPlaying && root.yrPaused ? root.fg : root.faint
               font.family: root.fontFamily
               font.pixelSize: Style.font.caption
             }
