@@ -11,6 +11,17 @@ ID=io.github.nameproof.nordic-weather
 SRC="$(cd "$(dirname "$0")/.." && pwd)"
 DEST="$HOME/.config/omarchy/plugins/$ID"
 
+# Only ever sync into a real folder: through a symlink, rsync --delete would
+# empty whatever it points to.
+if [[ -L $DEST ]]; then
+  echo "dev-sync: $DEST is a symlink; not syncing into it" >&2
+  exit 1
+fi
+if [[ -e $DEST && ! -d $DEST ]]; then
+  echo "dev-sync: $DEST exists but is not a folder" >&2
+  exit 1
+fi
+
 "$SRC/scripts/build-shaders"
 mkdir -p "$DEST"
 # nullglob: a first deploy has no files yet, and cat must not fail on it
@@ -18,8 +29,6 @@ mkdir -p "$DEST"
 code_sum() { (shopt -s nullglob; cat "$DEST"/*.qml "$DEST"/*.js "$DEST"/manifest.jso[n] "$DEST"/shaders/*.qsb) | sha256sum; }
 before=$(code_sum)
 rsync -a --delete --exclude .git --exclude node_modules --exclude build "$SRC/" "$DEST/"
-# Validate what was installed (build/ holds a venv with symlinks, but it is
-# git-ignored and never part of the plugin).
 omarchy-plugin-validate "$DEST"
 echo "Synced to $DEST"
 

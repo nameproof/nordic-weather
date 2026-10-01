@@ -491,16 +491,29 @@ function geocodeUrl(query, lang) {
     + "&count=6&format=json&language=" + strings(lang).geocode
 }
 
-// Size limits for what curl may hand over. API responses are collected in
-// the shell's memory, so a response that is far too big (e.g. a small
-// compressed one that expands to gigabytes) must end the transfer instead.
-// curl counts the decompressed bytes, stops at the limit (exit 63), and the
-// cut-off body fails to parse like any other broken response. Real
-// responses stay far below: the forecast is ~90 KB, the rest a few KB, and
-// lightning grows with the strikes of the last two hours. Radar tiles
-// (~3 KB) go to disk, not into memory, and have their own limit.
+// Size limits. API responses are collected in the shell's memory, so no
+// response may hand over more than MAX_RESPONSE_BYTES, whatever the server
+// sends: a small compressed response can expand to gigabytes, and a stream
+// may never end. Real responses stay far below: the forecast is ~90 KB, the
+// rest a few KB, and lightning grows with the strikes of the last two
+// hours. Radar tiles (~3 KB) go to disk and have their own limit. Both are
+// enforced outside curl, so they hold with any curl version (its own
+// --max-filesize covers decompressed data only since curl 8.20).
 var MAX_RESPONSE_BYTES = 8 * 1024 * 1024
 var MAX_TILE_BYTES = 1024 * 1024
+
+// argv running curl with `args` that passes on at most MAX_RESPONSE_BYTES
+// of its output: head stops reading at the limit, then one more byte tells
+// whether anything was cut off; once the pipe closes, curl ends on its next
+// write. A cut-off body fails to parse like any other broken response.
+function cappedCurl(args) {
+  var script = 'max=$1; shift\n'
+    + 'curl "$@" | {\n'
+    + '  head -c "$max"\n'
+    + '  if (( $(head -c 1 | wc -c) )); then echo "response over $max bytes, cut off" >&2; fi\n'
+    + '}\n'
+  return ["bash", "-c", script, "bash", String(MAX_RESPONSE_BYTES)].concat(args)
+}
 
 // Which service a request kind goes to: yr.no's radar and lightning, or
 // MET's API (forecast, nowcast, sun, moon). Throttling is per service.
@@ -511,17 +524,15 @@ function requestService(kind) {
 // argv for one request. `-D -` puts the response headers ahead of the body
 // on stdout so Expires / Last-Modified reach parseHttpResponse.
 function curlCommand(url, lastModified, maxTime, agent) {
-  var cmd = ["curl", "-sS", "--compressed", "--max-time", String(maxTime || 10),
-             "--max-filesize", String(MAX_RESPONSE_BYTES), "-A", agent, "-D", "-"]
-  if (lastModified) cmd.push("-H", "If-Modified-Since: " + lastModified)
-  cmd.push(url)
-  return cmd
+  var args = ["-sS", "--compressed", "--max-time", String(maxTime || 10), "-A", agent, "-D", "-"]
+  if (lastModified) args.push("-H", "If-Modified-Since: " + lastModified)
+  args.push(url)
+  return cappedCurl(args)
 }
 
 // argv for a place search: the body only, nothing on HTTP errors.
 function geocodeCommand(query, lang, agent) {
-  return ["curl", "-fsS", "--max-time", "5", "--max-filesize", String(MAX_RESPONSE_BYTES),
-          "-A", agent, geocodeUrl(query, lang)]
+  return cappedCurl(["-fsS", "--max-time", "5", "-A", agent, geocodeUrl(query, lang)])
 }
 
 function parseHttpResponse(raw) {
@@ -1828,7 +1839,9 @@ function mapLabels(places, view, width, height, lang, charPx, markerName) {
 // tiles are ~3 KB, so request latency limits, not bandwidth; 24 gives
 // ≈180–250 tiles/s, 12 ≈130–180, and 48 is slower again), each via a temp
 // file so a failed transfer never leaves a broken tile, and prune radar
-// tiles older than 2 h.
+// tiles (and the temp files of downloads that were killed) older than 2 h. A file-size limit (ulimit -f) holds each tile to
+// MAX_TILE_BYTES: a write past it fails that transfer (SIGXFSZ is ignored,
+// so it doesn't kill curl), and --remove-on-error drops the partial file.
 // Prints "<fetched> <missing>": missing counts the tiles still not on disk
 // afterwards (failed, or listed in the index before yr.no published them).
 function tileDownloadCommand(dir, downloads, agent) {
@@ -1841,15 +1854,16 @@ function tileDownloadCommand(dir, downloads, agent) {
     + '  shift 2\n'
     + 'done\n'
     + 'if (( ${#parts[@]} )); then\n'
-    + '  curl -sS --fail --parallel --parallel-max 24 --max-time 60 --max-filesize "$max" --remove-on-error \\\n'
-    + '    -A "$ua" "${args[@]}" 2>/dev/null\n'
+    + '  (trap "" XFSZ; ulimit -f $((max / 1024))\n'
+    + '   exec curl -sS --fail --parallel --parallel-max 24 --max-time 60 --remove-on-error \\\n'
+    + '     -A "$ua" "${args[@]}") 2>/dev/null\n'
     + '  for f in "${parts[@]}"; do\n'
     + '    if [[ -s "$dir/$f.part" ]]; then mv -f "$dir/$f.part" "$dir/$f"; else rm -f "$dir/$f.part"; fi\n'
     + '  done\n'
     + 'fi\n'
     + 'missing=0\n'
     + 'for f in "${files[@]}"; do [[ -s $dir/$f ]] || missing=$((missing + 1)); done\n'
-    + 'find "$dir" -name "r_*.png" -mmin +120 -delete 2>/dev/null\n'
+    + 'find "$dir" \\( -name "r_*.png" -o -name "r_*.png.part" \\) -mmin +120 -delete 2>/dev/null\n'
     + 'echo "${#parts[@]} $missing"\n'
   var cmd = ["bash", "-c", script, "bash", dir, agent, String(MAX_TILE_BYTES)]
   for (var i = 0; i < downloads.length; i++) cmd.push(downloads[i].url, downloads[i].file)
@@ -1946,6 +1960,7 @@ if (typeof module !== "undefined") {
     geocodeCommand: geocodeCommand,
     MAX_RESPONSE_BYTES: MAX_RESPONSE_BYTES,
     MAX_TILE_BYTES: MAX_TILE_BYTES,
+    cappedCurl: cappedCurl,
     curlCommand: curlCommand,
     requestService: requestService,
     parseHttpResponse: parseHttpResponse,

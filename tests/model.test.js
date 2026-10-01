@@ -137,39 +137,126 @@ test("curl command identifies itself and sends If-Modified-Since", () => {
   assert.ok(!M.curlCommand("https://x", "").includes("-H"))
 })
 
-test("every request caps the response size", () => {
-  const cap = (cmd) => cmd[cmd.indexOf("--max-filesize") + 1]
-  assert.equal(cap(M.curlCommand("https://x", "", 10, "agent/1")), String(M.MAX_RESPONSE_BYTES))
+test("every request goes through the response cap", () => {
+  const prefix = M.cappedCurl([]).slice(0, 5)  // bash -c <script> bash <max>
+  assert.equal(prefix[4], String(M.MAX_RESPONSE_BYTES))
+  assert.match(prefix[2], /curl "\$@" \| \{\n  head -c "\$max"\n/)
+  const fetch = M.curlCommand("https://x", "", 10, "agent/1")
+  assert.deepEqual(fetch.slice(0, 5), prefix)
+  assert.equal(fetch.at(-1), "https://x")
   const geocode = M.geocodeCommand("Bergen", "nb", "agent/1")
-  assert.equal(cap(geocode), String(M.MAX_RESPONSE_BYTES))
+  assert.deepEqual(geocode.slice(0, 5), prefix)
   assert.equal(geocode[geocode.indexOf("-A") + 1], "agent/1")
   assert.equal(geocode.at(-1), M.geocodeUrl("Bergen", "nb"))
 })
 
-test("an oversized compressed response is cut off at the cap", { skip: !fs.existsSync("/usr/bin/curl") && "curl not installed" }, async () => {
+// A local server for the size limits, run with the real curl:
+//   /gz-len, /gz-nolen  4× MAX_RESPONSE_BYTES of zeros, gzipped (~40 KB sent),
+//                       with and without Content-Length
+//   /endless            uncompressed zeros until the client hangs up
+//   /bytes/<n>          exactly n bytes
+//   /forecast           the forecast fixture, gzipped
+async function withServer(fn) {
   const http = require("node:http")
   const zlib = require("node:zlib")
-  const { spawn } = require("node:child_process")
-  // ~40 KB on the wire, 4× the cap once decompressed.
-  const body = zlib.gzipSync(Buffer.alloc(4 * M.MAX_RESPONSE_BYTES, "0"))
+  const bomb = zlib.gzipSync(Buffer.alloc(4 * M.MAX_RESPONSE_BYTES, "0"))
+  const forecast = fixture("forecast-alingsas.json")
+  const chunk = Buffer.alloc(65536, "0")
   const server = http.createServer((req, res) => {
-    res.writeHead(200, { "Content-Encoding": "gzip", "Content-Type": "application/json" })
-    res.end(body)
+    if (req.url.startsWith("/gz-")) {
+      const headers = { "Content-Encoding": "gzip", "Content-Type": "application/json" }
+      if (req.url === "/gz-len") headers["Content-Length"] = bomb.length
+      res.writeHead(200, headers)
+      res.end(bomb)
+    } else if (req.url === "/endless") {
+      res.writeHead(200, { "Content-Type": "application/json" })
+      const pump = () => {
+        while (!res.destroyed && res.write(chunk)) {}
+        if (!res.destroyed) res.once("drain", pump)
+      }
+      pump()
+    } else if (req.url.startsWith("/bytes/")) {
+      res.writeHead(200, { "Content-Type": "application/octet-stream" })
+      res.end(Buffer.alloc(parseInt(req.url.slice(7), 10), "b"))
+    } else if (req.url === "/forecast") {
+      res.writeHead(200, { "Content-Encoding": "gzip", "Content-Type": "application/json",
+                           "Expires": "Sat, 26 Sep 2026 13:14:28 GMT" })
+      res.end(zlib.gzipSync(forecast))
+    } else {
+      res.writeHead(404)
+      res.end()
+    }
   })
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve))
   try {
-    const cmd = M.curlCommand("http://127.0.0.1:" + server.address().port + "/", "", 10, "agent/1")
-    const { code, bytes } = await new Promise((resolve) => {
-      const proc = spawn(cmd[0], cmd.slice(1))
-      let bytes = 0
-      proc.stdout.on("data", (chunk) => { bytes += chunk.length })
-      proc.on("close", (code) => resolve({ code, bytes }))
-    })
-    assert.equal(code, 63)  // curl: maximum file size exceeded
-    assert.ok(bytes <= M.MAX_RESPONSE_BYTES + 4096, bytes + " bytes")
+    return await fn("http://127.0.0.1:" + server.address().port)
   } finally {
+    server.closeAllConnections()
     server.close()
   }
+}
+
+// Runs argv to the end (asynchronously: the server is in this process).
+function runCommand(cmd, env) {
+  const { spawn } = require("node:child_process")
+  return new Promise((resolve) => {
+    const started = Date.now()
+    const proc = spawn(cmd[0], cmd.slice(1), { env: env || process.env })
+    const out = [], err = []
+    let bytes = 0
+    proc.stdout.on("data", (chunk) => { bytes += chunk.length; if (bytes < 1e6) out.push(chunk) })
+    proc.stderr.on("data", (chunk) => err.push(chunk))
+    proc.on("close", (code) => resolve({ code, bytes, ms: Date.now() - started,
+      stdout: Buffer.concat(out).toString(), stderr: Buffer.concat(err).toString() }))
+  })
+}
+
+const noCurl = !fs.existsSync("/usr/bin/curl") && "curl not installed"
+
+test("an oversized response is cut off at the cap, whatever its kind", { skip: noCurl }, async () => {
+  await withServer(async (base) => {
+    for (const kind of ["/gz-len", "/gz-nolen", "/endless"]) {
+      const r = await runCommand(M.curlCommand(base + kind, "", 10, "agent/1"))
+      assert.equal(r.bytes, M.MAX_RESPONSE_BYTES, kind)
+      assert.match(r.stderr, /cut off/, kind)
+      assert.ok(r.ms < 5000, kind + " took " + r.ms + " ms")  // stopped, not timed out
+    }
+  })
+})
+
+test("responses up to the cap pass through intact", { skip: noCurl }, async () => {
+  await withServer(async (base) => {
+    const r = await runCommand(M.curlCommand(base + "/forecast", "", 10, "agent/1"))
+    const response = M.parseHttpResponse(r.stdout)
+    assert.equal(response.status, 200)
+    assert.equal(response.headers.expires, "Sat, 26 Sep 2026 13:14:28 GMT")
+    assert.equal(response.body, fixture("forecast-alingsas.json").toString())
+    assert.equal(r.stderr, "")
+    // The cap itself: exactly MAX_RESPONSE_BYTES passes, one byte more doesn't.
+    const exact = await runCommand(M.cappedCurl(["-fsS", base + "/bytes/" + M.MAX_RESPONSE_BYTES]))
+    assert.equal(exact.bytes, M.MAX_RESPONSE_BYTES)
+    assert.equal(exact.stderr, "")
+    const over = await runCommand(M.cappedCurl(["-fsS", base + "/bytes/" + (M.MAX_RESPONSE_BYTES + 1)]))
+    assert.equal(over.bytes, M.MAX_RESPONSE_BYTES)
+    assert.match(over.stderr, /cut off/)
+  })
+})
+
+test("an oversized radar tile is stopped and leaves nothing behind", { skip: noCurl }, async () => {
+  const os = require("node:os")
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "met-tilecap-"))
+  await withServer(async (base) => {
+    const r = await runCommand(M.tileDownloadCommand(dir, [
+      { url: base + "/bytes/3000", file: "r_1_6_1_1.png" },
+      { url: base + "/endless", file: "r_2_6_1_1.png" },
+      { url: base + "/bytes/3001", file: "r_3_6_1_1.png" },
+    ], "agent/1"))
+    assert.equal(r.stdout.trim(), "3 1")  // three fetched, the oversized one still missing
+    assert.ok(r.ms < 5000, "took " + r.ms + " ms")
+    assert.equal(fs.statSync(path.join(dir, "r_1_6_1_1.png")).size, 3000)
+    assert.equal(fs.statSync(path.join(dir, "r_3_6_1_1.png")).size, 3001)
+    assert.deepEqual(fs.readdirSync(dir).sort(), ["r_1_6_1_1.png", "r_3_6_1_1.png"])
+  })
 })
 
 test("HTTP response parsing and cache policy", () => {
@@ -674,8 +761,9 @@ test("tile download fetches only missing tiles and never keeps failures", () => 
   // Fake curl: logs its URLs; writes each -o target unless the URL contains "missing".
   fs.writeFileSync(path.join(bin, "curl"), `#!/bin/bash
 out=""
+echo "fsize $(ulimit -f)" >> "${log}"
+(( 0x$(awk '/^SigIgn/ {print $2}' /proc/$$/status) >> 24 & 1 )) && echo "xfsz ignored" >> "${log}"
 for a in "$@"; do
-  [[ $prev == --max-filesize ]] && echo "max $a" >> "${log}"
   [[ $a == --remove-on-error ]] && echo "remove-on-error" >> "${log}"
   if [[ $prev == -o ]]; then out=$a
   elif [[ $a == http* ]]; then echo "$a" >> "${log}"; [[ $a == *missing* ]] || printf 'PNG' > "$out"
@@ -688,15 +776,20 @@ done
     return execFileSync(cmd[0], cmd.slice(1), { env: { ...process.env, PATH: bin + ":" + process.env.PATH } }).toString().trim()
   }
   fs.writeFileSync(path.join(dir, "r_0_6_9_9.png"), "cached")
+  // Left by a download that was killed, three hours ago: pruned.
+  fs.writeFileSync(path.join(dir, "r_9_6_9_9.png.part"), "partial")
+  const old = new Date(Date.now() - 3 * 3600 * 1000)
+  fs.utimesSync(path.join(dir, "r_9_6_9_9.png.part"), old, old)
   const out = run([
     { url: "http://t/cached", file: "r_0_6_9_9.png" },
     { url: "http://t/r1", file: "r_1_6_1_1.png" },
     { url: "http://t/missing", file: "r_2_6_1_1.png" },
   ])
   assert.equal(out, "2 1")  // two were not cached; one of them failed and is still missing
-  // Capped per tile, and a transfer cut off at the cap leaves no partial file.
+  // Each file is limited to MAX_TILE_BYTES (in 1 KiB blocks); a write past it
+  // fails instead of killing curl, and the partial file is removed.
   assert.deepEqual(fs.readFileSync(log, "utf8").trim().split("\n"),
-                   ["max " + M.MAX_TILE_BYTES, "remove-on-error", "http://t/r1", "http://t/missing"])
+                   ["fsize " + M.MAX_TILE_BYTES / 1024, "xfsz ignored", "remove-on-error", "http://t/r1", "http://t/missing"])
   assert.equal(fs.readFileSync(path.join(dir, "r_0_6_9_9.png"), "utf8"), "cached")
   assert.equal(fs.readFileSync(path.join(dir, "r_1_6_1_1.png"), "utf8"), "PNG")
   assert.ok(!fs.existsSync(path.join(dir, "r_2_6_1_1.png")))
