@@ -97,6 +97,7 @@ Scope {
   //   Model.isFresh), elevations: { "lat,lon": metres }, prefs: { mapStep } }
   property var cache: ({})
   property bool cacheLoaded: false
+  property bool cacheReady: false
 
   property var view: Model.buildView({ lang: root.lang, nowMs: Date.now(), location: root.location })
   property bool stale: false
@@ -283,18 +284,26 @@ Scope {
     if (response.status === 203)
       console.warn("nordic-weather: " + kind + " API version is deprecated: " + url)
     if (response.status === 200 || response.status === 203 || response.status === 304) {
-      var unreadable = response.status !== 304 && (
-        ((kind === "forecast" || kind === "nowcast") && !Model.parseTimeseries(response.body))
-        || ((kind === "yrObs" || kind === "yrNow") && !Model.parseTileIndex(response.body).length)
-        || (kind === "lightning" && !Model.parseLightning(response.body)))
+      var parsedBody = null
+      if (response.status !== 304) {
+        if (kind === "forecast" || kind === "nowcast") parsedBody = Model.parseTimeseries(response.body)
+        else if (kind === "sun") parsedBody = Model.parseSun(response.body)
+        else if (kind === "moon") parsedBody = Model.parseMoon(response.body, now)
+        else if (kind === "yrObs" || kind === "yrNow") parsedBody = Model.parseTileIndex(response.body, now)
+        else if (kind === "lightning") parsedBody = Model.parseLightning(response.body, now)
+      }
+      var unreadable = response.status !== 304 && (parsedBody === null
+        || ((kind === "yrObs" || kind === "yrNow") && !parsedBody.length))
       if (unreadable) {
         recordFailure(kind, url, "unreadable response")
       } else {
         var fallbackTtl = kind === "yrObs" || kind === "yrNow" || kind === "lightning" ? 60000
           : kind === "nowcast" ? 5 * 60000 : kind === "forecast" ? 30 * 60000 : 24 * 3600000
         var entry = Model.cacheEntryFromResponse(entryFor(kind), url, response, now, fallbackTtl)
-        if (kind === "lightning") lightningEntry = entry
-        else setCacheEntry(kind, entry)
+        if (kind === "lightning") {
+          entry.strikes = response.status === 304 ? lightningStrikes : parsedBody
+          lightningEntry = entry
+        } else setCacheEntry(kind, entry)
         var cleared = Object.assign({}, failures)
         delete cleared[kind]
         failures = cleared
@@ -345,7 +354,7 @@ Scope {
   }
 
   function writeCache() {
-    if (!cacheLoaded) return
+    if (!cacheLoaded || !cacheReady) return
     cacheFile.setText(JSON.stringify(cache) + "\n")
   }
 
@@ -462,7 +471,7 @@ Scope {
 
   // The radar side panel: yr.no's radar frames on our own base map. Only
   // downloaded and animated while some panel shows it.
-  readonly property bool yrRadarActive: radarViewer !== null && hasLocation
+  readonly property bool yrRadarActive: radarViewer !== null && hasLocation && cacheReady
   onYrRadarActiveChanged: if (yrRadarActive) {
     yrPlayhead = { frame: 0, tick: yrPlayhead.tick }
     yrPaused = false
@@ -549,7 +558,8 @@ Scope {
   // memory only: it is short-lived, and the cache file is rewritten on
   // every change.
   property var lightningEntry: null
-  readonly property var lightningStrikes: lightningEntry ? (Model.parseLightning(lightningEntry.body) || []) : []
+  readonly property var lightningStrikes: lightningEntry
+    ? (lightningEntry.strikes || Model.parseLightning(lightningEntry.body, lightningEntry.fetchedMs) || []) : []
   readonly property double lightningDataMs: lightningEntry ? lightningEntry.fetchedMs : 0
   // The newest radar observation's time: "now" on the map.
   readonly property double yrNowMs: yrDisplay.frames.length && yrDisplay.nowIndex >= 0
@@ -557,7 +567,7 @@ Scope {
 
   // The radar indexes as cached, and what may be shown of them: nothing
   // while too old or while their refresh is awaited (yrRadarUsable).
-  readonly property var yrIndex: Model.radarFrames(cache.yrObs ? cache.yrObs.body : "", cache.yrNow ? cache.yrNow.body : "")
+  readonly property var yrIndex: Model.radarFrames(cache.yrObs ? cache.yrObs.body : "", cache.yrNow ? cache.yrNow.body : "", yrClockMs)
   readonly property var yrRadar: yrRadarUsable ? yrIndex : ({ frames: [], nowIndex: -1 })
   // The map's real pixel size, from the panel showing it.
   readonly property int yrMapWidth: radarViewer ? radarViewer.width : 0
@@ -808,9 +818,19 @@ Scope {
   Process {
     id: mkdirProc
     // The settings folder too, for the favourites file.
-    command: ["mkdir", "-p", root.cacheDir, Quickshell.env("HOME") + "/.local/state/omarchy/settings"]
+    command: Model.cacheSetupCommand(root.cacheDir, Quickshell.env("HOME") + "/.local/state/omarchy/settings")
     running: true
-    onExited: cacheFile.path = root.cacheDir + "/cache.json"
+    onExited: (exitCode) => {
+      if (exitCode === 0) {
+        root.cacheReady = true
+        cacheFile.path = root.cacheDir + "/cache.json"
+      } else {
+        console.warn("nordic-weather: cache directory unavailable")
+        root.cacheLoaded = true
+        root.rebuild()
+        root.maybeFetch(false)
+      }
+    }
   }
 
   // Only this service writes it, so there is nothing to watch.

@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "io.github.nameproof.nordic-weather",
   "name": "Nordic Weather",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "author": "nameproof",
   "license": "MIT",
   "description": "Weather bar with a detailed forecast and lazy-loaded radar map covering the Nordic region, replacing the built-in weather widget.",

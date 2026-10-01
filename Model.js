@@ -508,7 +508,7 @@ var MAX_TILE_BYTES = 1024 * 1024
 // write. A cut-off body fails to parse like any other broken response.
 function cappedCurl(args) {
   var script = 'max=$1; shift\n'
-    + 'curl "$@" | {\n'
+    + 'curl -q --proto =https --globoff "$@" | {\n'
     + '  head -c "$max"\n'
     + '  if (( $(head -c 1 | wc -c) )); then echo "response over $max bytes, cut off" >&2; fi\n'
     + '}\n'
@@ -526,13 +526,13 @@ function requestService(kind) {
 function curlCommand(url, lastModified, maxTime, agent) {
   var args = ["-sS", "--compressed", "--max-time", String(maxTime || 10), "-A", agent, "-D", "-"]
   if (lastModified) args.push("-H", "If-Modified-Since: " + lastModified)
-  args.push(url)
+  args.push("--url", url)
   return cappedCurl(args)
 }
 
 // argv for a place search: the body only, nothing on HTTP errors.
 function geocodeCommand(query, lang, agent) {
-  return cappedCurl(["-fsS", "--max-time", "5", "-A", agent, geocodeUrl(query, lang)])
+  return cappedCurl(["-fsS", "--max-time", "5", "-A", agent, "--url", geocodeUrl(query, lang)])
 }
 
 function parseHttpResponse(raw) {
@@ -693,6 +693,28 @@ function formatPrecip(amount, min, max, lang) {
 
 // ---------------------------------------------------------------- parsing
 
+// The byte ceiling also needs bounds on the objects and labels built from
+// a response. MET's ten-day forecast and two-hour nowcast fit in 256 steps.
+var MAX_TIMESERIES_STEPS = 256
+var MAX_PLACE_NAME_CHARS = 256
+var MAX_GEOCODE_RESULTS = 6
+
+function boundedText(value, max) {
+  return typeof value === "string" ? value.slice(0, max).replace(/[\x00-\x1f\x7f]/g, " ").trim() : ""
+}
+
+// Keep scalar weather measurements, never arbitrary nested API objects.
+function numericDetails(details) {
+  var out = {}, count = 0
+  if (!details || typeof details !== "object" || Array.isArray(details)) return out
+  for (var key in details) {
+    if (key.length > 64 || !isNum(details[key])) continue
+    out[key] = details[key]
+    if (++count >= 32) break
+  }
+  return out
+}
+
 function parseJson(text) {
   try {
     var parsed = JSON.parse(String(text || ""))
@@ -707,29 +729,33 @@ function parseTimeseries(text) {
   var data = parseJson(text)
   var series = data && data.properties && data.properties.timeseries
   if (!Array.isArray(series)) return null
-  var steps = []
-  for (var i = 0; i < series.length; i++) {
+  var steps = [], seen = {}
+  for (var i = 0; i < series.length && steps.length < MAX_TIMESERIES_STEPS; i++) {
     var ts = series[i]
+    if (!ts || typeof ts.time !== "string" || ts.time.length > 64) continue
     var ms = parseIsoMs(ts.time)
-    if (!isNum(ms) || !ts.data) continue
+    if (!isNum(ms) || !ts.data || seen[ms]) continue
+    seen[ms] = true
     steps.push({
       ms: ms,
-      instant: (ts.data.instant && ts.data.instant.details) || {},
+      instant: numericDetails(ts.data.instant && ts.data.instant.details),
       period1: periodOf(ts.data.next_1_hours, 1),
       period6: periodOf(ts.data.next_6_hours, 6),
       period12: periodOf(ts.data.next_12_hours, 12)
     })
   }
+  steps.sort(function(a, b) { return a.ms - b.ms })
   var meta = data.properties.meta || {}
-  return { updatedMs: parseIsoMs(meta.updated_at), steps: steps, meta: meta }
+  return { updatedMs: parseIsoMs(boundedText(meta.updated_at, 64)), steps: steps,
+           meta: { radar_coverage: boundedText(meta.radar_coverage, 64) } }
 }
 
 function periodOf(block, hours) {
   if (!block) return null
   return {
     hours: hours,
-    symbol: (block.summary && block.summary.symbol_code) || "",
-    details: block.details || {}
+    symbol: boundedText(block.summary && block.summary.symbol_code, 64),
+    details: numericDetails(block.details)
   }
 }
 
@@ -759,7 +785,8 @@ function moonPhaseAt(moon, ms) {
 function parseMoon(text, dateMs) {
   var data = parseJson(text)
   var p = data && data.properties
-  if (!p || !isNum(p.moonphase)) return null
+  if (!p || !isNum(p.moonphase) || p.moonphase < 0 || p.moonphase > 360
+      || (p.high_moon !== undefined && !validCelestialEvent(p.high_moon))) return null
   return {
     phaseDeg: p.moonphase,
     refMs: localDayStart(dateMs, 0) + 12 * HOUR_MS,
@@ -768,10 +795,20 @@ function parseMoon(text, dateMs) {
   }
 }
 
+// An event that doesn't happen that day (polar night, midnight sun) comes
+// as { time: null }; null is taken the same way. Missing fields, malformed
+// dates and other values are not valid events.
+function validCelestialEvent(event) {
+  if (event === null) return true
+  if (!event || typeof event !== "object") return false
+  return event.time === null
+    || (typeof event.time === "string" && event.time.length <= 64 && isNum(parseIsoMs(event.time)))
+}
+
 function parseSun(text) {
   var data = parseJson(text)
   var p = data && data.properties
-  if (!p) return null
+  if (!p || !validCelestialEvent(p.sunrise) || !validCelestialEvent(p.sunset)) return null
   return {
     riseMs: p.sunrise ? parseIsoMs(p.sunrise.time) : NaN,
     setMs: p.sunset ? parseIsoMs(p.sunset.time) : NaN
@@ -790,7 +827,7 @@ function parseLocationFile(raw) {
   var longitude = parseFloat(data.longitude)
   var ok = isNum(latitude) && isNum(longitude)
   return {
-    name: typeof data.name === "string" ? data.name.trim() : "",
+    name: boundedText(data.name, MAX_PLACE_NAME_CHARS),
     latitude: ok ? latitude : null,
     longitude: ok ? longitude : null
   }
@@ -802,15 +839,19 @@ function parseGeocodingResults(raw) {
   if (!Array.isArray(results)) return []
   // Unique keys: the panel lists these in a ScriptModel, which needs them.
   var out = [], seen = {}
-  for (var i = 0; i < results.length; i++) {
+  for (var i = 0; i < results.length && out.length < MAX_GEOCODE_RESULTS; i++) {
     var r = results[i]
-    if (!r || !r.name || !isNum(r.latitude) || !isNum(r.longitude)) continue
-    var key = r.name + "@" + r.latitude + "," + r.longitude
+    if (!r || !isNum(r.latitude) || !isNum(r.longitude)
+        || Math.abs(r.latitude) > 90 || Math.abs(r.longitude) > 180) continue
+    var name = boundedText(r.name, MAX_PLACE_NAME_CHARS)
+    if (!name) continue
+    var key = name + "@" + r.latitude + "," + r.longitude
     if (seen[key]) continue
     seen[key] = true
     out.push({
-      name: String(r.name),
-      description: [r.admin1, r.country].filter(function(part) { return !!part }).join(", "),
+      name: name,
+      description: [boundedText(r.admin1, MAX_PLACE_NAME_CHARS), boundedText(r.country, MAX_PLACE_NAME_CHARS)]
+        .filter(function(part) { return !!part }).join(", "),
       latitude: r.latitude,
       longitude: r.longitude,
       elevation: isNum(r.elevation) ? r.elevation : null,
@@ -849,8 +890,8 @@ function parseFavorites(text) {
     var f = list[i]
     if (!f || typeof f.name !== "string" || f.name.trim() === "") continue
     var place = {
-      name: f.name.trim(),
-      description: typeof f.description === "string" ? f.description : "",
+      name: boundedText(f.name, MAX_PLACE_NAME_CHARS),
+      description: boundedText(f.description, 2 * MAX_PLACE_NAME_CHARS + 2),
       latitude: Number(f.latitude),
       longitude: Number(f.longitude),
       elevation: isNum(f.elevation) ? f.elevation : null
@@ -1296,23 +1337,39 @@ var YR_LIGHTNING_URL = "https://www.yr.no/api/v0/lightning-events?fromHours=2"
 // a small dot marks it for this long.
 var LIGHTNING_FRAME_MS = 5 * 60000
 var LIGHTNING_TRAIL_MS = 10 * 60000
+// Each kept strike gets a bolt shape; a big storm keeps its newest strikes.
+var MAX_LIGHTNING_STRIKES = 8192
 
 // yr.no's body: { historicalData: "[[time (s), lon, lat, …], …]" } (a JSON
 // string inside JSON). → [{ ms, lat, lon, shape }] oldest first, or null
-// when unreadable.
-function parseLightning(text) {
+// when unreadable. Keeps the strikes the map can show: from the last two
+// hours (the body may hold older ones), inside the coverage (any zoom
+// step), at most MAX_LIGHTNING_STRIKES of the newest.
+function parseLightning(text, nowMs) {
+  if (!isNum(nowMs)) nowMs = Date.now()
   var data = parseJson(text)
   if (!data || typeof data.historicalData !== "string") return null
   var events = parseJson(data.historicalData)
   if (!Array.isArray(events)) return null
-  var out = []
+  var shown = []
   for (var i = 0; i < events.length; i++) {
     var e = events[i]
-    if (!Array.isArray(e) || !isNum(e[0]) || !isNum(e[1]) || !isNum(e[2])) continue
-    out.push({ ms: e[0] * 1000, lon: e[1], lat: e[2], shape: lightningShape(lightningSeed(e[0], e[1], e[2])) })
+    if (Array.isArray(e) && isNum(e[0]) && isNum(e[1]) && isNum(e[2])
+        && e[0] * 1000 >= nowMs - 2 * HOUR_MS && e[0] * 1000 <= nowMs + LIGHTNING_FRAME_MS
+        && e[1] >= RADAR_COVERAGE.west - 1 && e[1] <= RADAR_COVERAGE.east + 1
+        && e[2] >= RADAR_COVERAGE.south - 1 && e[2] <= RADAR_COVERAGE.north + 1) shown.push(i)
   }
-  out.sort(function(a, b) { return a.ms - b.ms })
-  return out
+  // Oldest first, strikes of the same second in yr.no's order.
+  shown.sort(function(a, b) { return events[a][0] - events[b][0] || a - b })
+  var out = [], seen = {}
+  for (var j = shown.length - 1; j >= 0 && out.length < MAX_LIGHTNING_STRIKES; j--) {
+    var s = events[shown[j]]
+    var key = s[0] + "," + s[1] + "," + s[2]
+    if (seen[key]) continue
+    seen[key] = true
+    out.push({ ms: s[0] * 1000, lon: s[1], lat: s[2], shape: lightningShape(lightningSeed(s[0], s[1], s[2])) })
+  }
+  return out.reverse()
 }
 
 // Which moment the map shows strikes for at a radar frame, or null for a
@@ -1548,8 +1605,15 @@ function viewTiles(view, width, height) {
   return tiles
 }
 
+// An index may only refer back to yr.no's HTTPS tile origin. Check again
+// when building a download command, including for older cached indexes.
+function isTileUrl(url) {
+  return typeof url === "string" && url.length <= 1024 && url.indexOf(YR_TILES + "/") === 0
+    && !/[\x00-\x20\x7f\\]/.test(url)
+}
+
 function tileUrl(template, z, x, y) {
-  return String(template).replace("{z}", z).replace("{x}", x).replace("{y}", y)
+  return isTileUrl(template) ? template.replace("{z}", z).replace("{x}", x).replace("{y}", y) : ""
 }
 
 // Cache file name of a radar tile of a frame ({ timeMs, runId, forecast }).
@@ -1574,17 +1638,35 @@ function tileRunId(template) {
   return m ? m[1].replace(/-/g, "").toLowerCase() : ""
 }
 
-// Tile index body → [{ timeMs, template, runId }], oldest first.
-function parseTileIndex(text) {
+var MAX_RADAR_INDEX_ENTRIES = 512
+var MAX_RADAR_OBSERVATIONS = 36
+var MAX_RADAR_FORECASTS = 24
+// The counts above bound the work. Times further than this from now are no
+// loop to show; a late radar within it still shows, with its delay note
+// (radarDelayNote gives only the time of day, so this stays under a day).
+var RADAR_WINDOW_MS = 12 * HOUR_MS
+
+// Tile index body → [{ timeMs, template, runId }], oldest first. A valid
+// loop covers recent observations and a two-hour forecast, not arbitrary
+// history or thousands of nearly simultaneous frames.
+function parseTileIndex(text, nowMs) {
+  if (!isNum(nowMs)) nowMs = Date.now()
   var data = parseJson(text)
   var times = data && Array.isArray(data.times) ? data.times : []
-  var out = []
+  if (times.length > MAX_RADAR_INDEX_ENTRIES) return []
+  var out = [], seen = {}
   for (var i = 0; i < times.length; i++) {
+    if (!times[i] || typeof times[i].time !== "string" || times[i].time.length > 64) continue
     var ms = parseIsoMs(times[i].time)
     var template = times[i].tiles && times[i].tiles.png
-    if (isNum(ms) && typeof template === "string")
-      out.push({ timeMs: ms, template: template, runId: tileRunId(template) })
+    if (!isNum(ms) || Math.abs(ms - nowMs) > RADAR_WINDOW_MS || seen[ms] || !isTileUrl(template)) continue
+    seen[ms] = true
+    out.push({ timeMs: ms, template: template, runId: tileRunId(template) })
   }
+  // Keep the nearest times before constructing a loop. The combined loop
+  // below is separately bounded to 36 observations + 24 forecasts.
+  out.sort(function(a, b) { return Math.abs(a.timeMs - nowMs) - Math.abs(b.timeMs - nowMs) })
+  out = out.slice(0, MAX_RADAR_OBSERVATIONS + MAX_RADAR_FORECASTS)
   out.sort(function(a, b) { return a.timeMs - b.timeMs })
   return out
 }
@@ -1627,16 +1709,21 @@ function radarDelayNote(newestMs, nowMs, lang) {
 
 // Observations, then nowcast frames after the last observation.
 // nowIndex is the last observed frame (-1 without observations).
-function radarFrames(obsText, nowcastText) {
-  var obs = parseTileIndex(obsText)
+function radarFrames(obsText, nowcastText, nowMs) {
+  if (!isNum(nowMs)) nowMs = Date.now()
+  var obs = parseTileIndex(obsText, nowMs).filter(function(f) { return f.timeMs <= nowMs + LIGHTNING_FRAME_MS })
+    .slice(-MAX_RADAR_OBSERVATIONS)
   var lastObs = obs.length ? obs[obs.length - 1].timeMs : -Infinity
   var frames = []
   for (var i = 0; i < obs.length; i++)
     frames.push({ timeMs: obs[i].timeMs, template: obs[i].template, runId: obs[i].runId, forecast: false })
-  var nowcast = parseTileIndex(nowcastText)
-  for (var j = 0; j < nowcast.length; j++) {
-    if (nowcast[j].timeMs > lastObs)
+  var nowcast = parseTileIndex(nowcastText, nowMs)
+  var forecastCount = 0
+  for (var j = 0; j < nowcast.length && forecastCount < MAX_RADAR_FORECASTS; j++) {
+    if (nowcast[j].timeMs > lastObs) {
       frames.push({ timeMs: nowcast[j].timeMs, template: nowcast[j].template, runId: nowcast[j].runId, forecast: true })
+      forecastCount++
+    }
   }
   return { frames: frames, nowIndex: obs.length - 1 }
 }
@@ -1763,28 +1850,48 @@ function frameComposeSpecs(radarTiles, frames, viewKey) {
 
 // Assemble missing frames (4 at a time) on a black background, like the
 // tiles themselves, scaling tiles to the view's tile size. A frame with a
-// tile missing is left out rather than drawn with a hole. Each frame goes
-// via a temp file. Prints "<frames> <frames on disk>".
+// tile missing is left out rather than drawn with a hole. Only decode PNG
+// tiles of at most 256x256, with a bounded canvas and pixel cache. Temporary
+// output lives in a fresh private directory, never a planted .part link.
+// Prints "<frames> <frames on disk>".
 function frameComposeCommand(dir, width, height, tilePx, specs) {
-  var script = 'dir=$1; w=$2; h=$3; px=$4; shift 4\n'
-    + 'compose() {\n'
-    + '  local IFS="|"; local parts=($1); local out="$dir/${parts[0]}"\n'
-    + '  [[ -s $out ]] && return 0\n'
-    + '  local args=(-size "${w}x${h}" xc:black) p f l t\n'
-    + '  for p in "${parts[@]:1}"; do\n'
-    + '    IFS=: read -r f l t <<< "$p"\n'
-    + '    [[ -s $dir/$f ]] || return 0\n'
-    + '    args+=("(" "$dir/$f" -resize "${px}x${px}!" ")" -geometry "$(printf "%+d%+d" "$l" "$t")" -composite)\n'
-    + '  done\n'
-    + '  magick -limit thread 1 "${args[@]}" -define png:compression-level=1 "PNG24:$out.part" 2>/dev/null && mv -f "$out.part" "$out" || rm -f "$out.part"\n'
-    + '}\n'
-    + 'n=0\n'
-    + 'for spec in "$@"; do compose "$spec" & n=$((n + 1)); (( n % 4 == 0 )) && wait; done\n'
-    + 'wait\n'
-    + 'find "$dir" -name "f_*.png" -mmin +120 -delete 2>/dev/null\n'
-    + 'made=0\n'
-    + 'for spec in "$@"; do [[ -s $dir/${spec%%|*} ]] && made=$((made + 1)); done\n'
-    + 'echo "$# $made"\n'
+  if (!(width >= 1 && width <= 1024 && height >= 1 && height <= 1024 && tilePx >= 1 && tilePx <= 512))
+    return ["false"]
+  var script = 'set -euo pipefail\n'
+    + 'dir=$1; w=$2; h=$3; px=$4; cache=${dir%/*}; shift 4\n'
+    + cacheGuardScript()
+    + [
+      'mkdir -p -- "$dir"',
+      'work=$(mktemp -d "$dir/.nw-frames.XXXXXXXX")',
+      'trap \'rm -rf -- "$work"\' EXIT',
+      'compose() {',
+      '  local IFS="|"; local parts; read -ra parts <<< "$1"',
+      '  [[ ${parts[0]} =~ ^f_[[:alnum:]_-]+[.]png$ ]] || return 1',
+      '  local out="$dir/${parts[0]}" tmp="$work/${parts[0]}"',
+      '  [[ -f $out && -s $out && ! -L $out ]] && return 0',
+      '  local args=(-size "${w}x${h}" xc:black) p f l t',
+      '  for p in "${parts[@]:1}"; do',
+      '    IFS=: read -r f l t <<< "$p"',
+      '    [[ $f =~ ^r_[[:alnum:]_-]+[.]png$ ]] || return 1',
+      '    [[ -f $dir/$f && -s $dir/$f && ! -L $dir/$f ]] || return 0',
+      '    args+=("(" -limit width 256 -limit height 256 "png:$dir/$f"',
+      '      -limit width 1024 -limit height 1024 -resize "${px}x${px}!" ")"',
+      '      -geometry "$(printf "%+d%+d" "$l" "$t")" -composite)',
+      '  done',
+      '  magick -limit thread 1 -limit time 10 -limit width 1024 -limit height 1024 \\',
+      '    -limit memory 128MiB -limit map 0 -limit disk 0 -limit list-length 2 \\',
+      '    "${args[@]}" -define png:compression-level=1 "PNG24:$tmp" 2>/dev/null \\',
+      '    && mv -fT -- "$tmp" "$out" || rm -f -- "$tmp"',
+      '}',
+      'n=0',
+      'for spec in "$@"; do compose "$spec" & n=$((n + 1)); if (( n % 4 == 0 )); then wait; fi; done',
+      'wait',
+      'find "$dir" -maxdepth 1 -name "f_*.png" -mmin +120 -delete 2>/dev/null || true',
+      'find "$dir" -maxdepth 1 -type d -name ".nw-frames.*" -mmin +120 -exec rm -rf -- {} + 2>/dev/null || true',
+      'made=0',
+      'for spec in "$@"; do [[ -f $dir/${spec%%|*} && -s $dir/${spec%%|*} && ! -L $dir/${spec%%|*} ]] && made=$((made + 1)); done',
+      'echo "$# $made"'
+    ].join("\n") + "\n"
   return ["bash", "-c", script, "bash", dir, String(width), String(height), String(tilePx)].concat(specs)
 }
 
@@ -1835,38 +1942,66 @@ function mapLabels(places, view, width, height, lang, charPx, markerName) {
   return out
 }
 
+// Both the plugin cache root and its tiles child must be real directories.
+// Parents above the plugin root may still be redirected by a dotfiles setup.
+function cacheGuardScript() {
+  return 'if [[ -L $cache || -L $dir || ( -e $cache && ! -d $cache ) || ( -e $dir && ! -d $dir ) ]]; then\n'
+    + '  echo "nordic-weather: refusing a linked or invalid cache directory" >&2; exit 1\n'
+    + 'fi\n'
+}
+
+function cacheSetupCommand(cacheDir, settingsDir) {
+  var script = 'set -euo pipefail\ncache=$1; dir="$cache/tiles"\n'
+    + cacheGuardScript() + 'mkdir -p -- "$dir" "$2"\n'
+  return ["bash", "-c", script, "bash", cacheDir, settingsDir]
+}
+
 // Fetch the tiles that aren't cached yet (24 at a time over HTTP/2: the
 // tiles are ~3 KB, so request latency limits, not bandwidth; 24 gives
-// ≈180–250 tiles/s, 12 ≈130–180, and 48 is slower again), each via a temp
-// file so a failed transfer never leaves a broken tile, and prune radar
-// tiles (and the temp files of downloads that were killed) older than 2 h. A file-size limit (ulimit -f) holds each tile to
-// MAX_TILE_BYTES: a write past it fails that transfer (SIGXFSZ is ignored,
-// so it doesn't kill curl), and --remove-on-error drops the partial file.
+// ≈180–250 tiles/s, 12 ≈130–180, and 48 is slower again) into a fresh
+// private folder, then move each finished tile into place: a failed
+// transfer never leaves a broken tile, and a planted link is replaced, not
+// written through. A URL that isn't a yr.no tile (isTileUrl) is skipped.
+// A file-size limit (ulimit -f) holds each tile to MAX_TILE_BYTES: a write
+// past it fails that transfer (SIGXFSZ is ignored, so it doesn't kill
+// curl), and --remove-on-error drops the partial file. Tiles, .part files
+// and work folders older than 2 h are pruned.
 // Prints "<fetched> <missing>": missing counts the tiles still not on disk
 // afterwards (failed, or listed in the index before yr.no published them).
 function tileDownloadCommand(dir, downloads, agent) {
-  var script = 'dir=$1; ua=$2; max=$3; shift 3\n'
-    + 'mkdir -p "$dir"\n'
-    + 'args=(); parts=(); files=()\n'
-    + 'while (( $# >= 2 )); do\n'
-    + '  files+=("$2")\n'
-    + '  if [[ ! -s "$dir/$2" ]]; then args+=(-o "$dir/$2.part" "$1"); parts+=("$2"); fi\n'
-    + '  shift 2\n'
-    + 'done\n'
-    + 'if (( ${#parts[@]} )); then\n'
-    + '  (trap "" XFSZ; ulimit -f $((max / 1024))\n'
-    + '   exec curl -sS --fail --parallel --parallel-max 24 --max-time 60 --remove-on-error \\\n'
-    + '     -A "$ua" "${args[@]}") 2>/dev/null\n'
-    + '  for f in "${parts[@]}"; do\n'
-    + '    if [[ -s "$dir/$f.part" ]]; then mv -f "$dir/$f.part" "$dir/$f"; else rm -f "$dir/$f.part"; fi\n'
-    + '  done\n'
-    + 'fi\n'
-    + 'missing=0\n'
-    + 'for f in "${files[@]}"; do [[ -s $dir/$f ]] || missing=$((missing + 1)); done\n'
-    + 'find "$dir" \\( -name "r_*.png" -o -name "r_*.png.part" \\) -mmin +120 -delete 2>/dev/null\n'
-    + 'echo "${#parts[@]} $missing"\n'
+  var script = 'set -euo pipefail\n'
+    + 'dir=$1; ua=$2; max=$3; cache=${dir%/*}; shift 3\n'
+    + cacheGuardScript()
+    + [
+      'mkdir -p -- "$dir"',
+      'work=$(mktemp -d "$dir/.nw-tiles.XXXXXXXX")',
+      'trap \'rm -rf -- "$work"\' EXIT',
+      'args=(); parts=(); files=()',
+      'while (( $# >= 2 )); do',
+      '  [[ $2 =~ ^r_[[:alnum:]_-]+[.]png$ ]] || exit 1',
+      '  files+=("$2")',
+      '  if [[ -n $1 && ! ( -f $dir/$2 && -s $dir/$2 && ! -L $dir/$2 ) ]]; then',
+      '    args+=(-o "$work/$2" --url "$1"); parts+=("$2")',
+      '  fi',
+      '  shift 2',
+      'done',
+      'if (( ${#parts[@]} )); then',
+      '  (trap "" XFSZ; ulimit -f $((max / 1024)) || exit 1',
+      '   exec curl -q --proto =https --globoff -sS --fail --parallel --parallel-max 24 --max-time 60 --remove-on-error \\',
+      '     -A "$ua" "${args[@]}") 2>/dev/null || true',
+      '  for f in "${parts[@]}"; do',
+      '    if [[ -s $work/$f ]]; then mv -fT -- "$work/$f" "$dir/$f"; fi',
+      '  done',
+      'fi',
+      'missing=0',
+      'for f in "${files[@]}"; do [[ -f $dir/$f && -s $dir/$f && ! -L $dir/$f ]] || missing=$((missing + 1)); done',
+      'find "$dir" -maxdepth 1 \\( -name "r_*.png" -o -name "r_*.png.part" \\) -mmin +120 -delete 2>/dev/null || true',
+      'find "$dir" -maxdepth 1 -type d -name ".nw-tiles.*" -mmin +120 -exec rm -rf -- {} + 2>/dev/null || true',
+      'echo "${#parts[@]} $missing"'
+    ].join("\n") + "\n"
   var cmd = ["bash", "-c", script, "bash", dir, agent, String(MAX_TILE_BYTES)]
-  for (var i = 0; i < downloads.length; i++) cmd.push(downloads[i].url, downloads[i].file)
+  for (var i = 0; i < downloads.length; i++)
+    cmd.push(isTileUrl(downloads[i].url) ? downloads[i].url : "", downloads[i].file)
   return cmd
 }
 
@@ -1889,6 +2024,9 @@ function notification(view) {
   var s = strings(view.lang)
   var c = view.current
   var headline = (view.location.name ? view.location.name + "  ·  " : "") + c.description + " " + c.temp + "°"
+  // omarchy-notification-send parses options before its headline. This
+  // boundary also covers a dash-leading fallback weather symbol.
+  headline = headline.replace(/^-+/, "")
   var body = []
   if (c.wind.speed !== null) body.push(s.wind + " " + c.wind.speed + " m/s " + c.wind.dirLabel)
   if (view.nowcast) body.push(view.nowcast.summary)
@@ -1915,6 +2053,7 @@ if (typeof module !== "undefined") {
     worldTile: worldTile,
     viewTiles: viewTiles,
     tileUrl: tileUrl,
+    isTileUrl: isTileUrl,
     radarTileFile: radarTileFile,
     radarFrameId: radarFrameId,
     RADAR_MAX_AGE_MS: RADAR_MAX_AGE_MS,
@@ -1936,6 +2075,7 @@ if (typeof module !== "undefined") {
     radarFrameFile: radarFrameFile,
     frameComposeSpecs: frameComposeSpecs,
     frameComposeCommand: frameComposeCommand,
+    cacheSetupCommand: cacheSetupCommand,
     tileDownloadCommand: tileDownloadCommand,
     NOWCAST_BACKGROUND_MS: NOWCAST_BACKGROUND_MS,
     userAgent: userAgent,
@@ -1960,6 +2100,11 @@ if (typeof module !== "undefined") {
     geocodeCommand: geocodeCommand,
     MAX_RESPONSE_BYTES: MAX_RESPONSE_BYTES,
     MAX_TILE_BYTES: MAX_TILE_BYTES,
+    MAX_TIMESERIES_STEPS: MAX_TIMESERIES_STEPS,
+    MAX_PLACE_NAME_CHARS: MAX_PLACE_NAME_CHARS,
+    MAX_GEOCODE_RESULTS: MAX_GEOCODE_RESULTS,
+    MAX_RADAR_OBSERVATIONS: MAX_RADAR_OBSERVATIONS,
+    MAX_RADAR_FORECASTS: MAX_RADAR_FORECASTS,
     cappedCurl: cappedCurl,
     curlCommand: curlCommand,
     requestService: requestService,
@@ -1996,6 +2141,7 @@ if (typeof module !== "undefined") {
     YR_LIGHTNING_URL: YR_LIGHTNING_URL,
     LIGHTNING_FRAME_MS: LIGHTNING_FRAME_MS,
     LIGHTNING_TRAIL_MS: LIGHTNING_TRAIL_MS,
+    MAX_LIGHTNING_STRIKES: MAX_LIGHTNING_STRIKES,
     parseLightning: parseLightning,
     lightningMoment: lightningMoment,
     lightningBolts: lightningBolts,

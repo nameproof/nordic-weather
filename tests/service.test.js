@@ -44,13 +44,58 @@ test("Quickshell: service publishes, pauses, replaces loops, loads progressively
     const result = spawnSync("qs", ["-p", path.join(dir, "shell.qml"), "--no-color"], {
       encoding: "utf8", timeout: 20000,
       env: { ...process.env, QT_QPA_PLATFORM: "offscreen", QT_QUICK_BACKEND: "software",
-        XDG_RUNTIME_DIR: runtime, XDG_CACHE_HOME: cache, QML_DISABLE_DISK_CACHE: "1", RADAR_TEST_BASE: String(base) }
+        HOME: path.join(dir, "home"), XDG_RUNTIME_DIR: runtime, XDG_CACHE_HOME: cache,
+        QML_DISABLE_DISK_CACHE: "1", RADAR_TEST_BASE: String(base) }
     })
     const output = (result.stdout || "") + (result.stderr || "")
     assert.equal(result.status, 0, (result.error || "") + output)
     assert.match(output, /RADAR_SERVICE_PASS/, output)
+    assert.match(output, /SECURITY_SERVICE_PASS/, output)
     assert.doesNotMatch(output, /RADAR_SERVICE_FAIL|ReferenceError|TypeError|Binding loop/)
   } finally {
     fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test("Quickshell: linked cache directories are neither loaded nor written", {
+  skip: !fs.existsSync("/usr/bin/qs") || !fs.existsSync("/usr/share/omarchy/shell/Commons")
+    ? "Quickshell and Omarchy required" : false
+}, () => {
+  for (const linked of ["root", "tiles"]) {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "nordic-cache-service-"))
+    try {
+      for (const file of ["Service.qml", "Model.js"])
+        fs.copyFileSync(path.join(__dirname, "..", file), path.join(dir, file))
+      fs.copyFileSync(path.join(__dirname, "qml", "cache.qml"), path.join(dir, "shell.qml"))
+      fs.symlinkSync("/usr/share/omarchy/shell/Commons", path.join(dir, "Commons"))
+      const outside = path.join(dir, "outside"), cache = path.join(dir, "cache")
+      const root = path.join(cache, M.PLUGIN_ID)
+      fs.mkdirSync(outside)
+      fs.mkdirSync(cache)
+      if (linked === "root") fs.symlinkSync(outside, root)
+      else {
+        fs.mkdirSync(root)
+        fs.symlinkSync(outside, path.join(root, "tiles"))
+      }
+      const cachedFile = path.join(root, "cache.json")
+      const original = '{"prefs":{"mustNotLoad":true}}\n'
+      fs.writeFileSync(cachedFile, original)
+      const runtime = path.join(dir, "runtime")
+      fs.mkdirSync(runtime, { mode: 0o700 })
+      const result = spawnSync("qs", ["-p", path.join(dir, "shell.qml"), "--no-color"], {
+        encoding: "utf8", timeout: 5000,
+        env: { ...process.env, HOME: path.join(dir, "home"), QT_QPA_PLATFORM: "offscreen",
+          QT_QUICK_BACKEND: "software", XDG_RUNTIME_DIR: runtime, XDG_CACHE_HOME: cache, QML_DISABLE_DISK_CACHE: "1" }
+      })
+      const output = (result.stdout || "") + (result.stderr || "")
+      assert.equal(result.status, 0, (result.error || "") + output)
+      assert.match(output, /CACHE_GUARD_PASS/)
+      assert.match(output, /cache directory unavailable/)
+      assert.doesNotMatch(output, /CACHE_GUARD_FAIL|ReferenceError|TypeError|Binding loop/)
+      assert.equal(fs.readFileSync(cachedFile, "utf8"), original)
+      assert.deepEqual(fs.readdirSync(outside), linked === "root" ? ["cache.json"] : [])
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
   }
 })

@@ -4,6 +4,7 @@ const assert = require("node:assert/strict")
 const fs = require("node:fs")
 const path = require("node:path")
 const M = require("./load-model.js")
+const { withHttpsServer, runCommand } = require("./network.js")
 
 const fixture = (name) => fs.readFileSync(path.join(__dirname, "fixtures", name), "utf8")
 const repoFile = (name) => fs.readFileSync(path.join(__dirname, "..", name), "utf8")
@@ -140,7 +141,7 @@ test("curl command identifies itself and sends If-Modified-Since", () => {
 test("every request goes through the response cap", () => {
   const prefix = M.cappedCurl([]).slice(0, 5)  // bash -c <script> bash <max>
   assert.equal(prefix[4], String(M.MAX_RESPONSE_BYTES))
-  assert.match(prefix[2], /curl "\$@" \| \{\n  head -c "\$max"\n/)
+  assert.match(prefix[2], /curl -q --proto =https --globoff "\$@" \| \{\n  head -c "\$max"\n/)
   const fetch = M.curlCommand("https://x", "", 10, "agent/1")
   assert.deepEqual(fetch.slice(0, 5), prefix)
   assert.equal(fetch.at(-1), "https://x")
@@ -157,12 +158,11 @@ test("every request goes through the response cap", () => {
 //   /bytes/<n>          exactly n bytes
 //   /forecast           the forecast fixture, gzipped
 async function withServer(fn) {
-  const http = require("node:http")
   const zlib = require("node:zlib")
   const bomb = zlib.gzipSync(Buffer.alloc(4 * M.MAX_RESPONSE_BYTES, "0"))
   const forecast = fixture("forecast-alingsas.json")
   const chunk = Buffer.alloc(65536, "0")
-  const server = http.createServer((req, res) => {
+  return withHttpsServer((req, res) => {
     if (req.url.startsWith("/gz-")) {
       const headers = { "Content-Encoding": "gzip", "Content-Type": "application/json" }
       if (req.url === "/gz-len") headers["Content-Length"] = bomb.length
@@ -186,37 +186,15 @@ async function withServer(fn) {
       res.writeHead(404)
       res.end()
     }
-  })
-  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve))
-  try {
-    return await fn("http://127.0.0.1:" + server.address().port)
-  } finally {
-    server.closeAllConnections()
-    server.close()
-  }
-}
-
-// Runs argv to the end (asynchronously: the server is in this process).
-function runCommand(cmd, env) {
-  const { spawn } = require("node:child_process")
-  return new Promise((resolve) => {
-    const started = Date.now()
-    const proc = spawn(cmd[0], cmd.slice(1), { env: env || process.env })
-    const out = [], err = []
-    let bytes = 0
-    proc.stdout.on("data", (chunk) => { bytes += chunk.length; if (bytes < 1e6) out.push(chunk) })
-    proc.stderr.on("data", (chunk) => err.push(chunk))
-    proc.on("close", (code) => resolve({ code, bytes, ms: Date.now() - started,
-      stdout: Buffer.concat(out).toString(), stderr: Buffer.concat(err).toString() }))
-  })
+  }, fn)
 }
 
 const noCurl = !fs.existsSync("/usr/bin/curl") && "curl not installed"
 
 test("an oversized response is cut off at the cap, whatever its kind", { skip: noCurl }, async () => {
-  await withServer(async (base) => {
+  await withServer(async (base, env) => {
     for (const kind of ["/gz-len", "/gz-nolen", "/endless"]) {
-      const r = await runCommand(M.curlCommand(base + kind, "", 10, "agent/1"))
+      const r = await runCommand(M.curlCommand(base + kind, "", 10, "agent/1"), env)
       assert.equal(r.bytes, M.MAX_RESPONSE_BYTES, kind)
       assert.match(r.stderr, /cut off/, kind)
       assert.ok(r.ms < 5000, kind + " took " + r.ms + " ms")  // stopped, not timed out
@@ -225,18 +203,18 @@ test("an oversized response is cut off at the cap, whatever its kind", { skip: n
 })
 
 test("responses up to the cap pass through intact", { skip: noCurl }, async () => {
-  await withServer(async (base) => {
-    const r = await runCommand(M.curlCommand(base + "/forecast", "", 10, "agent/1"))
+  await withServer(async (base, env) => {
+    const r = await runCommand(M.curlCommand(base + "/forecast", "", 10, "agent/1"), env)
     const response = M.parseHttpResponse(r.stdout)
     assert.equal(response.status, 200)
     assert.equal(response.headers.expires, "Sat, 26 Sep 2026 13:14:28 GMT")
     assert.equal(response.body, fixture("forecast-alingsas.json").toString())
     assert.equal(r.stderr, "")
     // The cap itself: exactly MAX_RESPONSE_BYTES passes, one byte more doesn't.
-    const exact = await runCommand(M.cappedCurl(["-fsS", base + "/bytes/" + M.MAX_RESPONSE_BYTES]))
+    const exact = await runCommand(M.cappedCurl(["-fsS", "--url", base + "/bytes/" + M.MAX_RESPONSE_BYTES]), env)
     assert.equal(exact.bytes, M.MAX_RESPONSE_BYTES)
     assert.equal(exact.stderr, "")
-    const over = await runCommand(M.cappedCurl(["-fsS", base + "/bytes/" + (M.MAX_RESPONSE_BYTES + 1)]))
+    const over = await runCommand(M.cappedCurl(["-fsS", "--url", base + "/bytes/" + (M.MAX_RESPONSE_BYTES + 1)]), env)
     assert.equal(over.bytes, M.MAX_RESPONSE_BYTES)
     assert.match(over.stderr, /cut off/)
   })
@@ -245,18 +223,19 @@ test("responses up to the cap pass through intact", { skip: noCurl }, async () =
 test("an oversized radar tile is stopped and leaves nothing behind", { skip: noCurl }, async () => {
   const os = require("node:os")
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "met-tilecap-"))
-  await withServer(async (base) => {
+  await withServer(async (base, env) => {
     const r = await runCommand(M.tileDownloadCommand(dir, [
       { url: base + "/bytes/3000", file: "r_1_6_1_1.png" },
       { url: base + "/endless", file: "r_2_6_1_1.png" },
       { url: base + "/bytes/3001", file: "r_3_6_1_1.png" },
-    ], "agent/1"))
+    ], "agent/1"), env)
     assert.equal(r.stdout.trim(), "3 1")  // three fetched, the oversized one still missing
     assert.ok(r.ms < 5000, "took " + r.ms + " ms")
     assert.equal(fs.statSync(path.join(dir, "r_1_6_1_1.png")).size, 3000)
     assert.equal(fs.statSync(path.join(dir, "r_3_6_1_1.png")).size, 3001)
     assert.deepEqual(fs.readdirSync(dir).sort(), ["r_1_6_1_1.png", "r_3_6_1_1.png"])
   })
+  fs.rmSync(dir, { recursive: true, force: true })
 })
 
 test("HTTP response parsing and cache policy", () => {
@@ -706,7 +685,8 @@ test("map zoom steps", () => {
 })
 
 test("radar frames: observations then nowcast, with the now marker", () => {
-  const { frames, nowIndex } = M.radarFrames(fixture("yr-radar-observations.json"), fixture("yr-radar-nowcast.json"))
+  const reference = Date.parse("2026-09-26T16:45:00Z")
+  const { frames, nowIndex } = M.radarFrames(fixture("yr-radar-observations.json"), fixture("yr-radar-nowcast.json"), reference)
   assert.equal(nowIndex, 17)
   assert.equal(frames[nowIndex].forecast, false)
   assert.equal(frames[nowIndex + 1].forecast, true)
@@ -714,7 +694,7 @@ test("radar frames: observations then nowcast, with the now marker", () => {
   assert.equal(frames.length, 18 + 24)
   assert.match(frames[0].template, /\{z\}\/\{x\}\/\{y\}\.png$/)
   // Nowcast frames at or before the last observation are dropped.
-  const overlap = M.radarFrames(fixture("yr-radar-observations.json"), fixture("yr-radar-observations.json"))
+  const overlap = M.radarFrames(fixture("yr-radar-observations.json"), fixture("yr-radar-observations.json"), reference)
   assert.equal(overlap.frames.length, 18)
   assert.deepEqual(M.radarFrames("", ""), { frames: [], nowIndex: -1 })
   // Every frame knows its run; runs differ between observations and nowcast
@@ -742,14 +722,14 @@ test("radar frames: observations then nowcast, with the now marker", () => {
 })
 
 test("radar tile urls and cache names", () => {
-  assert.equal(M.tileUrl("https://x/{z}/{x}/{y}.png", 6, 34, 19), "https://x/6/34/19.png")
+  assert.equal(M.tileUrl("https://tiles.yr.no/{z}/{x}/{y}.png", 6, 34, 19), "https://tiles.yr.no/6/34/19.png")
   assert.equal(M.radarTileFile({ z: 6, x: 34, y: 19 }, { timeMs: 123, runId: "abc", forecast: true }), "r_abc_123_6_34_19.png")
   assert.equal(M.radarTileFile({ z: 6, x: 34, y: 19 }, { timeMs: 123, runId: "abc", forecast: false }), "r_123_6_34_19.png")
   assert.equal(M.radarTileFile({ z: 6, x: 34, y: 19 }, { timeMs: 123, runId: "", forecast: true }), "r_123_6_34_19.png")
   const dl = M.radarDownloads([{ z: 6, x: 3, y: 4 }, { z: 6, x: 5, y: 4 }],
-    [{ timeMs: 1, template: "u/{z}/{x}/{y}" }, { timeMs: 2, template: "v/{z}/{x}/{y}" }])
+    [{ timeMs: 1, template: "https://tiles.yr.no/u/{z}/{x}/{y}" }, { timeMs: 2, template: "https://tiles.yr.no/v/{z}/{x}/{y}" }])
   assert.equal(dl.length, 2 * 2)
-  assert.deepEqual(dl[0], { url: "u/6/3/4", file: "r_1_6_3_4.png" })  // no run id in these templates
+  assert.deepEqual(dl[0], { url: "https://tiles.yr.no/u/6/3/4", file: "r_1_6_3_4.png" })  // no run id in these templates
 })
 
 test("tile download fetches only missing tiles and never keeps failures", () => {
@@ -781,15 +761,15 @@ done
   const old = new Date(Date.now() - 3 * 3600 * 1000)
   fs.utimesSync(path.join(dir, "r_9_6_9_9.png.part"), old, old)
   const out = run([
-    { url: "http://t/cached", file: "r_0_6_9_9.png" },
-    { url: "http://t/r1", file: "r_1_6_1_1.png" },
-    { url: "http://t/missing", file: "r_2_6_1_1.png" },
+    { url: "https://tiles.yr.no/cached", file: "r_0_6_9_9.png" },
+    { url: "https://tiles.yr.no/r1", file: "r_1_6_1_1.png" },
+    { url: "https://tiles.yr.no/missing", file: "r_2_6_1_1.png" },
   ])
   assert.equal(out, "2 1")  // two were not cached; one of them failed and is still missing
   // Each file is limited to MAX_TILE_BYTES (in 1 KiB blocks); a write past it
   // fails instead of killing curl, and the partial file is removed.
   assert.deepEqual(fs.readFileSync(log, "utf8").trim().split("\n"),
-                   ["fsize " + M.MAX_TILE_BYTES / 1024, "xfsz ignored", "remove-on-error", "http://t/r1", "http://t/missing"])
+                   ["fsize " + M.MAX_TILE_BYTES / 1024, "xfsz ignored", "remove-on-error", "https://tiles.yr.no/r1", "https://tiles.yr.no/missing"])
   assert.equal(fs.readFileSync(path.join(dir, "r_0_6_9_9.png"), "utf8"), "cached")
   assert.equal(fs.readFileSync(path.join(dir, "r_1_6_1_1.png"), "utf8"), "PNG")
   assert.ok(!fs.existsSync(path.join(dir, "r_2_6_1_1.png")))
@@ -927,17 +907,18 @@ test("list keys: unique, stable for unchanged content, new for changed content",
 })
 
 test("lightning: yr.no's events, oldest first, each with a stable bolt", () => {
-  const strikes = M.parseLightning(fixture("yr-lightning.json"))
+  const reference = 1785943095000 + 2 * 3600000
+  const strikes = M.parseLightning(fixture("yr-lightning.json"), reference)
   assert.equal(strikes.length, 40)
   assert.deepEqual([strikes[0].ms, strikes[0].lon, strikes[0].lat], [1785943095000, 11.4935, 58.1638])
   assert.ok(strikes.every((s, i) => i === 0 || strikes[i - 1].ms <= s.ms))
-  assert.deepEqual(M.parseLightning(fixture("yr-lightning.json"))[5].shape, strikes[5].shape)
+  assert.deepEqual(M.parseLightning(fixture("yr-lightning.json"), reference)[5].shape, strikes[5].shape)
   // No strikes is a valid answer; anything else unreadable is not.
   assert.deepEqual(M.parseLightning('{"historicalData":"[]","status":{"code":"Ok"}}'), [])
   assert.equal(M.parseLightning("<html>"), null)
   assert.equal(M.parseLightning('{"historicalData":"oops"}'), null)
   // Extra fields per event are ignored; broken events are skipped.
-  assert.equal(M.parseLightning('{"historicalData":"[[1,2,3,4,5],[\\"x\\",2,3]]"}').length, 1)
+  assert.equal(M.parseLightning('{"historicalData":"[[1785943095,12,58,4,5],[\\"x\\",2,3]]"}', reference).length, 1)
 })
 
 test("lightning bolt: ends at the strike, above it, sometimes forked", () => {

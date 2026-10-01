@@ -56,14 +56,50 @@ Scope {
     service.yrShown = null
     service.yrPending = null
     service.cache = Object.assign({}, service.cache, { yrObs: { body: JSON.stringify({ times: times.map(function(t) {
-      return { time: new Date(test.base + t).toISOString(), tiles: { png: "https://invalid.test/{z}/{x}/{y}.png" } }
+      return { time: new Date(test.base + t).toISOString(), tiles: { png: "https://tiles.yr.no/test/{z}/{x}/{y}.png" } }
     }) }), fetchedMs: fetchedMs === undefined ? Date.now() : fetchedMs } })
     service.maybeComposeYrFrames()
   }
 
+  function securityChecks() {
+    var urls = service.requestUrls()
+    var ok = "HTTP/2 200\r\ncontent-type: application/json\r\n\r\n"
+    // Polar night and a moon that never sets, as MET sends them.
+    var bodies = {
+      sun: '{"properties":{"body":"Sun","sunrise":{"time":null,"azimuth":null},"sunset":{"time":null,"azimuth":null}}}',
+      moon: '{"properties":{"body":"Moon","moonrise":{"time":null,"azimuth":null},"moonset":{"time":null,"azimuth":null},'
+        + '"high_moon":{"time":"2026-12-21T21:37+01:00","disc_centre_elevation":35.82,"visible":true},"moonphase":136.57}}'
+    }
+    for (var kind in bodies) {
+      service.handleResponse(kind, urls[kind], ok + bodies[kind])
+      var previous = service.cache[kind]
+      check(previous && previous.body === bodies[kind], kind + ": valid polar response is cached")
+      for (var bad of ["<html>", "{}", '{"properties":{}}']) {
+        service.handleResponse(kind, urls[kind], ok + bad)
+        check(service.cache[kind] === previous, kind + ": malformed response must preserve good cache")
+        check(service.failures[kind].count > 0, kind + ": malformed response backs off")
+      }
+      service.handleResponse(kind, urls[kind], "HTTP/2 304\r\n\r\n")
+      check(service.cache[kind].body === bodies[kind], kind + ": 304 keeps validated data")
+      check(!service.failures[kind], kind + ": successful refresh clears failures")
+    }
+    var events = []
+    for (var i = 0; i < 12000; i++) events.push([Date.now() / 1000 - i / 2, 12, 58])
+    var lightningBody = JSON.stringify({ historicalData: JSON.stringify(events) })
+    service.handleResponse("lightning", urls.lightning, ok + lightningBody)
+    check(service.lightningStrikes.length === 8192, "lightning geometry is bounded")
+    check(service.lightningStrikes === service.lightningEntry.strikes, "lightning reuses its validation parse")
+    var strikes = service.lightningStrikes
+    service.handleResponse("lightning", urls.lightning, "HTTP/2 304\r\n\r\n")
+    check(service.lightningStrikes === strikes, "lightning 304 reuses geometry")
+    service.lightningEntry = null
+    console.log("SECURITY_SERVICE_PASS")
+  }
+
   function step() {
     if (Date.now() - started > 15000) throw new Error("timeout at stage " + stage)
-    if (stage === 0 && service.cacheLoaded) {
+    if (stage === 0 && service.cacheLoaded && service.cacheReady) {
+      securityChecks()
       service.cache = { prefs: { mapStep: 1 } }
       viewer(true)
       service.yrPending = loop("first", [0, 300000, 600000])
@@ -128,7 +164,7 @@ Scope {
       downloadChecks = []
       service.yrAwaiting = { yrObs: true, yrNow: false }
       var body = JSON.stringify({ times: [1500000, 1800000].map(function(t) {
-        return { time: new Date(test.base + t).toISOString(), tiles: { png: "https://invalid.test/{z}/{x}/{y}.png" } }
+        return { time: new Date(test.base + t).toISOString(), tiles: { png: "https://tiles.yr.no/test/{z}/{x}/{y}.png" } }
       }) })
       service.handleResponse("yrObs", "https://invalid.test/available.json", "HTTP/2 200\r\ncontent-type: application/json\r\n\r\n" + body)
       check(service.yrRadarUsable, "the stored refresh ends the wait")
