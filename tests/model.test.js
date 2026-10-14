@@ -496,8 +496,18 @@ test("nowcast summary", () => {
   for (let i = 0; i < 3; i++) stopping.steps[i].instant.precipitation_rate = 1.2
   assert.equal(M.buildNowcast(stopping, stopping.steps[0].ms, "en").summary, "Precipitation now, stopping in ~15 min")
 
+  // MET's radar down for the place: the row stays (with the radar button),
+  // saying only that; notification and summary leave it out.
+  const down = M.parseTimeseries(fixture("nowcast-alingsas-unavailable.json"))
+  const unavailable = M.buildNowcast(down, down.steps[0].ms, "sv")
+  assert.deepEqual(unavailable, { summary: "Tillfälligt otillgänglig", wet: false, points: [], unavailable: true })
+  const view = M.buildView({ forecast: alingsas, nowcast: down, location: { name: "Alingsås", latitude: 57.93, longitude: 12.53 },
+                             lang: "sv", nowMs: down.steps[0].ms, settings: {} })
+  assert.ok(view.nowcast.unavailable)
+  assert.match(M.summaryText(view), /^Alingsås · .* · Vind \d+ m\/s \S+$/)
+
   const noCoverage = JSON.parse(JSON.stringify(nowcastAlingsas))
-  noCoverage.meta.radar_coverage = "temporarily unavailable"
+  noCoverage.meta.radar_coverage = "no coverage"
   assert.equal(M.buildNowcast(noCoverage, noCoverage.steps[0].ms, "sv"), null)
 })
 

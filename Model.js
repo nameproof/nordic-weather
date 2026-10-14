@@ -84,6 +84,7 @@ var STRINGS = {
     sleet: "Snöblandat regn",
     snow: "Snö",
     nowcastDry: "Uppehåll närmaste {n} min",
+    nowcastUnavailable: "Tillfälligt otillgänglig",
     nowcastWetAll: "{kind} närmaste {n} min",
     nowcastStopping: "{kind} nu, upphör om ca {n} min",
     nowcastStarting: "{kind} om ca {n} min",
@@ -143,6 +144,7 @@ var STRINGS = {
     sleet: "Sludd",
     snow: "Snø",
     nowcastDry: "Opphold neste {n} min",
+    nowcastUnavailable: "Midlertidig utilgjengelig",
     nowcastWetAll: "{kind} neste {n} min",
     nowcastStopping: "{kind} nå, gir seg om ca. {n} min",
     nowcastStarting: "{kind} om ca. {n} min",
@@ -201,6 +203,7 @@ var STRINGS = {
     sleet: "Slud",
     snow: "Sne",
     nowcastDry: "Tørvejr de næste {n} min",
+    nowcastUnavailable: "Midlertidigt utilgængelig",
     nowcastWetAll: "{kind} de næste {n} min",
     nowcastStopping: "{kind} nu, stopper om ca. {n} min",
     nowcastStarting: "{kind} om ca. {n} min",
@@ -262,6 +265,7 @@ var STRINGS = {
     sleet: "Räntäsade",
     snow: "Lumisade",
     nowcastDry: "Poutaa seuraavat {n} min",
+    nowcastUnavailable: "Tilapäisesti poissa käytöstä",
     nowcastWetAll: "{kind} jatkuu seuraavat {n} min",
     nowcastStopping: "{kind} nyt, loppuu noin {n} min kuluttua",
     nowcastStarting: "{kind} alkaa noin {n} min kuluttua",
@@ -320,6 +324,7 @@ var STRINGS = {
     sleet: "Sleet",
     snow: "Snow",
     nowcastDry: "No precipitation next {n} min",
+    nowcastUnavailable: "Temporarily unavailable",
     nowcastWetAll: "{kind} for the next {n} min",
     nowcastStopping: "{kind} now, stopping in ~{n} min",
     nowcastStarting: "{kind} in ~{n} min",
@@ -1196,10 +1201,15 @@ function kindWord(kind, lang) {
   return kind === "rain" ? s.rain : kind === "sleet" ? s.sleet : kind === "snow" ? s.snow : s.precipitation
 }
 
-// Radar nowcast → one sentence plus points for a sparkline. Null when the
-// place has no radar coverage or the data is too old to say anything.
+// Radar nowcast → one sentence plus points for a sparkline. While MET's
+// radar is down for the place, only that is said (unavailable, no points),
+// so the row and its radar map button stay. Null when the place has no
+// radar coverage or the data is too old to say anything.
 function buildNowcast(nowcast, nowMs, lang) {
-  if (!nowcast || !nowcast.meta || nowcast.meta.radar_coverage !== "ok") return null
+  if (!nowcast || !nowcast.meta) return null
+  if (nowcast.meta.radar_coverage === "temporarily unavailable")
+    return { summary: strings(lang).nowcastUnavailable, wet: false, points: [], unavailable: true }
+  if (nowcast.meta.radar_coverage !== "ok") return null
   var points = []
   for (var i = 0; i < nowcast.steps.length; i++) {
     var s = nowcast.steps[i]
@@ -2029,7 +2039,7 @@ function notification(view) {
   headline = headline.replace(/^-+/, "")
   var body = []
   if (c.wind.speed !== null) body.push(s.wind + " " + c.wind.speed + " m/s " + c.wind.dirLabel)
-  if (view.nowcast) body.push(view.nowcast.summary)
+  if (view.nowcast && !view.nowcast.unavailable) body.push(view.nowcast.summary)
   return { glyph: c.icon, headline: headline, body: body.join("  ·  ") }
 }
 
