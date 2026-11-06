@@ -443,14 +443,13 @@ test("day precipitation glyph follows the most likely kind", () => {
   assert.ok(days.every((d) => d.precipGlyph === M.precipGlyph(d.rows)))
 })
 
-test("hourly rows carry precipitation, spread and wind", () => {
+test("hourly rows carry precipitation and wind", () => {
   const days = M.buildHourlyDays(bergen, bergen.steps[0].ms, 1, 3, "sv")
   const rows = days.flatMap((d) => d.rows)
   const wet = rows.find((r) => r.precip.text !== "")
   assert.ok(wet, "Bergen fixture should have precipitation")
   assert.match(wet.precip.text, /mm$/)
   assert.ok(rows.every((r) => r.wind.arrow.length === 1))
-  assert.ok(rows.every((r) => r.tempSpread >= 0))
 })
 
 test("long range: one row per day, today first, sane values", () => {

@@ -1044,8 +1044,6 @@ function buildRow(step, lang, sixHour) {
   var d = step.instant
   var period = sixHour ? step.period6 : stepPeriod(step)
   var pd = period ? period.details : {}
-  var spread = isNum(d.air_temperature_percentile_90) && isNum(d.air_temperature_percentile_10)
-    ? d.air_temperature_percentile_90 - d.air_temperature_percentile_10 : 0
   return {
     ms: step.ms,
     hour: pad2(localHour(step.ms)),
@@ -1053,7 +1051,6 @@ function buildRow(step, lang, sixHour) {
     icon: iconForSymbol(period ? period.symbol : ""),
     description: describeSymbol(period ? period.symbol : "", lang),
     temp: roundTemp(d.air_temperature),
-    tempSpread: spread >= 2 ? Math.round(spread / 2) : 0,
     precip: {
       probability: isNum(pd.probability_of_precipitation) ? Math.round(pd.probability_of_precipitation) : null,
       text: formatPrecip(pd.precipitation_amount, pd.precipitation_amount_min, pd.precipitation_amount_max, lang),

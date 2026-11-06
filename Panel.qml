@@ -912,8 +912,8 @@ Panel {
                     font.family: root.fontFamily
                     font.pixelSize: Math.round(Style.font.body * glyphScale)
                   }
-                  // Over "16°" (the "±2" after it is dim).
-                  ColumnIcon { center: columnIcons.tempRight - 3.5 * columnIcons.charWidth; text: "\ue34e"; glyphScale: 11 / 14 }  // thermometer exterior
+                  // Over "16°".
+                  ColumnIcon { center: columnIcons.tempRight - 1.5 * columnIcons.charWidth; text: "\ue34e"; glyphScale: 11 / 14 }  // thermometer exterior
                   ColumnIcon { center: columnIcons.popRight - columnIcons.charWidth; text: daySection.modelData.precipGlyph }  // rain, sleet or snow
                   // Over the arrow, between speed and gust.
                   ColumnIcon {
@@ -967,10 +967,8 @@ Panel {
                     width: root.colTemp
                     anchors.verticalCenter: parent.verticalCenter
                     horizontalAlignment: Text.AlignRight
-                    textFormat: Text.StyledText
-                    text: hourRow.modelData.temp + "°" + (hourRow.modelData.tempSpread > 0
-                      ? "<font color=\"" + root.faint + "\">±" + hourRow.modelData.tempSpread + "</font>"
-                      : "<font color=\"transparent\">±0</font>")
+                    textFormat: Text.PlainText
+                    text: hourRow.modelData.temp + "°"
                     color: root.fg
                     font.family: root.fontFamily
                     font.pixelSize: Style.font.body
