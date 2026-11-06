@@ -792,7 +792,8 @@ Panel {
               anchors.verticalCenter: parent.verticalCenter
               textFormat: Text.PlainText
               text: "  " + (root.view.nowcast ? root.view.nowcast.summary : "")  // raindrop
-              color: root.fg
+              // Muted while MET's radar is down for the place.
+              color: root.view.nowcast && root.view.nowcast.unavailable ? root.dim : root.fg
               font.family: root.fontFamily
               font.pixelSize: Style.font.body
             }
