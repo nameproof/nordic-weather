@@ -912,8 +912,8 @@ Panel {
                     font.family: root.fontFamily
                     font.pixelSize: Math.round(Style.font.body * glyphScale)
                   }
-                  // Over "16°".
-                  ColumnIcon { center: columnIcons.tempRight - 1.5 * columnIcons.charWidth; text: "\ue34e"; glyphScale: 11 / 14 }  // thermometer exterior
+                  // Over the last digit and the unit, like the drop over "0%".
+                  ColumnIcon { center: columnIcons.tempRight - columnIcons.charWidth; text: "\ue34e"; glyphScale: 11 / 14 }  // thermometer exterior
                   ColumnIcon { center: columnIcons.popRight - columnIcons.charWidth; text: daySection.modelData.precipGlyph }  // rain, sleet or snow
                   // Over the arrow, between speed and gust.
                   ColumnIcon {
