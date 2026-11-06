@@ -63,14 +63,11 @@ var STRINGS = {
     weekdays: ["Söndag", "Måndag", "Tisdag", "Onsdag", "Torsdag", "Fredag", "Lördag"],
     weekdaysShort: ["Sön", "Mån", "Tis", "Ons", "Tor", "Fre", "Lör"],
     compass: ["N", "NO", "O", "SO", "S", "SV", "V", "NV"],
-    moonPhases: ["Nymåne", "Växande månskära", "Första kvarter", "Växande måne",
-                 "Fullmåne", "Avtagande måne", "Sista kvarter", "Avtagande månskära"],
     feels: "Känns som",
     wind: "Vind",
     humidity: "Fukt",
     pressure: "Tryck",
     pressureNext: "på 3 h",
-    moonHigh: "högst",
     gust: "byar",
     forecastFrom: "prognos från",
     stale: "Inaktuell",
@@ -123,14 +120,11 @@ var STRINGS = {
     weekdays: ["Søndag", "Mandag", "Tirsdag", "Onsdag", "Torsdag", "Fredag", "Lørdag"],
     weekdaysShort: ["Søn", "Man", "Tir", "Ons", "Tor", "Fre", "Lør"],
     compass: ["N", "NØ", "Ø", "SØ", "S", "SV", "V", "NV"],
-    moonPhases: ["Nymåne", "Voksende månesigd", "Første kvarter", "Voksende måne",
-                 "Fullmåne", "Minkende måne", "Siste kvarter", "Minkende månesigd"],
     feels: "Føles som",
     wind: "Vind",
     humidity: "Fukt",
     pressure: "Trykk",
     pressureNext: "på 3 t",
-    moonHigh: "høyest",
     gust: "kast",
     forecastFrom: "prognose fra",
     stale: "Utdatert",
@@ -182,14 +176,11 @@ var STRINGS = {
     weekdays: ["Søndag", "Mandag", "Tirsdag", "Onsdag", "Torsdag", "Fredag", "Lørdag"],
     weekdaysShort: ["Søn", "Man", "Tir", "Ons", "Tor", "Fre", "Lør"],
     compass: ["N", "NØ", "Ø", "SØ", "S", "SV", "V", "NV"],
-    moonPhases: ["Nymåne", "Tiltagende månesegl", "Første kvarter", "Tiltagende måne",
-                 "Fuldmåne", "Aftagende måne", "Sidste kvarter", "Aftagende månesegl"],
     feels: "Føles som",
     wind: "Vind",
     humidity: "Fugt",
     pressure: "Tryk",
     pressureNext: "på 3 t",
-    moonHigh: "højest",
     gust: "stød",
     forecastFrom: "prognose fra",
     stale: "Forældet",
@@ -244,14 +235,11 @@ var STRINGS = {
     weekdays: ["Sunnuntai", "Maanantai", "Tiistai", "Keskiviikko", "Torstai", "Perjantai", "Lauantai"],
     weekdaysShort: ["Su", "Ma", "Ti", "Ke", "To", "Pe", "La"],
     compass: ["P", "KO", "I", "KA", "E", "LO", "L", "LU"],
-    moonPhases: ["Uusikuu", "Kasvava kuunsirppi", "Ensimmäinen neljännes", "Kasvava kuu",
-                 "Täysikuu", "Vähenevä kuu", "Viimeinen neljännes", "Vähenevä kuunsirppi"],
     feels: "Tuntuu kuin",
     wind: "Tuuli",
     humidity: "Kosteus",
     pressure: "Paine",
     pressureNext: "/ 3 h",
-    moonHigh: "ylimmillään",
     gust: "puuskat",
     forecastFrom: "ennuste klo",
     stale: "Vanhentunut",
@@ -303,14 +291,11 @@ var STRINGS = {
     weekdays: ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"],
     weekdaysShort: ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"],
     compass: ["N", "NE", "E", "SE", "S", "SW", "W", "NW"],
-    moonPhases: ["New moon", "Waxing crescent", "First quarter", "Waxing gibbous",
-                 "Full moon", "Waning gibbous", "Last quarter", "Waning crescent"],
     feels: "Feels like",
     wind: "Wind",
     humidity: "Humidity",
     pressure: "Pressure",
     pressureNext: "in 3 h",
-    moonHigh: "highest",
     gust: "gusts",
     forecastFrom: "forecast from",
     stale: "Stale",
@@ -630,13 +615,9 @@ function moonGlyph(phaseDeg) {
   return String.fromCharCode(0xe38d + index)
 }
 
-function moonPhaseIndex(phaseDeg) {
-  return Math.round((((phaseDeg % 360) + 360) % 360) / 45) % 8
-}
-
 // Clear and fair nights use the crescent, not the moon-phase glyphs: near
 // full or new moon those are a plain disc or ring, which reads as a glitch in
-// the bar. The phase glyph is shown in the footer, next to its name.
+// the bar. The phase glyph is shown in the footer.
 function iconForSymbol(code) {
   var sym = splitSymbol(code)
   var night = sym.variant === "night"
@@ -790,13 +771,10 @@ function moonPhaseAt(moon, ms) {
 function parseMoon(text, dateMs) {
   var data = parseJson(text)
   var p = data && data.properties
-  if (!p || !isNum(p.moonphase) || p.moonphase < 0 || p.moonphase > 360
-      || (p.high_moon !== undefined && !validCelestialEvent(p.high_moon))) return null
+  if (!p || !isNum(p.moonphase) || p.moonphase < 0 || p.moonphase > 360) return null
   return {
     phaseDeg: p.moonphase,
-    refMs: localDayStart(dateMs, 0) + 12 * HOUR_MS,
-    // Highest point in the day asked for.
-    highMs: p.high_moon ? parseIsoMs(p.high_moon.time) : NaN
+    refMs: localDayStart(dateMs, 0) + 12 * HOUR_MS
   }
 }
 
@@ -1256,12 +1234,11 @@ function buildMoon(moon, nowMs, lang) {
   var phase = moonPhaseAt(moon, nowMs)
   return {
     icon: moonGlyph(phase),
-    name: strings(lang).moonPhases[moonPhaseIndex(phase)],
     // Share of the disc that is lit: 0 % at new moon, 100 % at full.
     // Rounded down so "100 %" means actually full, not a day early.
     illumination: Math.floor((1 - Math.cos(phase * Math.PI / 180)) / 2 * 100 + 1e-9),
-    // "högst 01:08"; "" without high-moon data.
-    high: isNum(moon.highMs) ? strings(lang).moonHigh + " " + localClock(moon.highMs) : ""
+    // Up while waxing (lit share growing), down while waning.
+    trend: phase < 180 ? "\u2191" : "\u2193"
   }
 }
 

@@ -1160,7 +1160,7 @@ Panel {
                 visible: !!root.view.moon
                 textFormat: Text.PlainText
                 text: root.view.moon
-                  ? root.view.moon.icon + " " + root.view.moon.name + " " + root.view.moon.illumination + "%" + (root.view.moon.high !== "" ? "   " + root.view.moon.high : "")
+                  ? root.view.moon.icon + " " + root.view.moon.illumination + "% " + root.view.moon.trend
                   : ""
                 color: root.fg
                 font.family: root.fontFamily

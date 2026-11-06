@@ -292,9 +292,7 @@ test("celestial validation rejects malformed data and keeps polar events", () =>
     location: { name: "Tromsø", latitude: 69.65, longitude: 18.96 }, nowMs: Date.parse("2026-09-26T12:44:00Z"), lang: "en" })
   assert.deepEqual(view.sun, { rise: "—", set: "—" })
   assert.ok(M.parseSun('{"properties":{"sunrise":null,"sunset":null}}'))
-  assert.ok(M.parseMoon('{"properties":{"moonphase":123,"high_moon":{"time":null}}}', NOW))
-  assert.ok(M.parseMoon('{"properties":{"moonphase":123,"high_moon":null}}', NOW))
-  assert.equal(M.parseMoon('{"properties":{"moonphase":123,"high_moon":{}}}', NOW), null)
+  assert.ok(M.parseMoon('{"properties":{"moonphase":123}}', NOW))
   assert.equal(M.parseMoon('{"properties":{"moonphase":361}}', NOW), null)
 })
 

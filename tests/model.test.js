@@ -313,7 +313,7 @@ test("moon phase glyphs (footer only)", () => {
 })
 
 test("moon illumination", () => {
-  const at = (deg) => M.buildView({ moon: { phaseDeg: deg, refMs: NOW, highMs: NaN },
+  const at = (deg) => M.buildView({ moon: { phaseDeg: deg, refMs: NOW },
                                     lang: "sv", nowMs: NOW }).moon.illumination
   assert.equal(at(0), 0)
   assert.equal(at(90), 50)
@@ -514,12 +514,9 @@ test("sun and moon", () => {
   const view = M.buildView({ forecast: alingsas, sun, moon, location: { name: "Alingsås", latitude: 57.93, longitude: 12.53 },
                              lang: "sv", nowMs: NOW, settings: {} })
   assert.deepEqual(view.sun, { rise: "07:03", set: "18:58" })
-  assert.equal(view.moon.name, "Fullmåne")  // 171°, within ±22.5° of full
-  assert.equal(view.moon.high, "högst 01:08")
-  const noHigh = Object.assign({}, moon, { highMs: NaN })
-  assert.equal(M.buildView({ moon: noHigh, lang: "en", nowMs: NOW }).moon.high, "")
-  assert.equal(M.buildView({ moon, lang: "en", nowMs: NOW }).moon.high, "highest 01:08")
   assert.equal(view.moon.illumination, 99)  // 171°
+  assert.equal(view.moon.trend, "\u2191")   // still waxing, just before full
+  assert.equal(M.buildView({ moon: { phaseDeg: 270, refMs: NOW }, lang: "sv", nowMs: NOW }).moon.trend, "\u2193")
 })
 
 test("full view model", () => {
