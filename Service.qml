@@ -29,8 +29,24 @@ Scope {
 
   // ---------------------------------------------------------------- settings
 
-  readonly property string lang: Model.langFor(Qt.locale().name)
+  // Omarchy's display language when one is chosen there (Setup > Language;
+  // the file is watched, so a switch shows at once), else the system
+  // locale's (Model.chooseLang).
+  readonly property string lang: Model.chooseLang(languageFile.text(), Qt.locale().name)
   readonly property var t: Model.strings(lang)
+  onLangChanged: rebuild()
+
+  FileView {
+    id: languageFile
+    // Where omarchy-language keeps the code; OMARCHY_LANGUAGE_FILE moves it,
+    // as it does for Omarchy's own I18n.
+    path: Quickshell.env("OMARCHY_LANGUAGE_FILE")
+      || ((Quickshell.env("XDG_CONFIG_HOME") || Quickshell.env("HOME") + "/.config") + "/omarchy/language")
+    watchChanges: true
+    printErrors: false
+    blockLoading: true
+    onFileChanged: reload()
+  }
 
   // From the bar entry in shell.json (BarWidget passes them on).
   property int hourStep: 3
@@ -129,6 +145,8 @@ Scope {
       // Later: `offline` (derived from connectivity) may not have caught up
       // yet in this handler, and would skip the fetch (e.g. after a wake).
       Qt.callLater(maybeFetch, false)
+      // A new network may be somewhere else.
+      Qt.callLater(detectLocation)
     }
   }
 
@@ -788,13 +806,56 @@ Scope {
     watchChanges: true
     printErrors: false
     onFileChanged: reload()
-    onLoaded: root.setLocationIfChanged(Model.parseLocationFile(text()))
-    onLoadFailed: root.setLocationIfChanged(Model.parseLocationFile(""))
+    onLoaded: root.setConfiguredLocation(Model.parseLocationFile(text()))
+    onLoadFailed: root.setConfiguredLocation(Model.parseLocationFile(""))
+  }
+
+  // weather.json's place. With none set there, the location comes from
+  // geo.omarchy.org instead (Model.effectiveLocation): looked up once the
+  // file has been read, again every 30 minutes and on a new connection, so
+  // a laptop that moves follows along. A failed lookup keeps the last place.
+  property var configuredLocation: ({ name: "", latitude: null, longitude: null })
+  property var detectedLocation: null
+  property bool locationRead: false
+  readonly property bool autoLocation: Model.isAutoLocation(configuredLocation)
+
+  function setConfiguredLocation(next) {
+    var first = !locationRead
+    locationRead = true
+    configuredLocation = next
+    setLocationIfChanged(Model.effectiveLocation(configuredLocation, detectedLocation))
+    if (autoLocation && (first || !detectedLocation)) detectLocation()
   }
 
   function setLocationIfChanged(next) {
     if (next.name === location.name && next.latitude === location.latitude && next.longitude === location.longitude) return
     location = next
+  }
+
+  function detectLocation() {
+    if (!locationRead || !autoLocation || offline || geoProc.running) return
+    geoProc.command = Model.geoCommand(userAgent)
+    geoProc.running = true
+  }
+
+  Process {
+    id: geoProc
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        var place = Model.parseGeoLocation(text)
+        if (!place) return
+        root.detectedLocation = place
+        root.setLocationIfChanged(Model.effectiveLocation(root.configuredLocation, place))
+      }
+    }
+  }
+
+  Timer {
+    interval: 30 * 60000
+    running: root.autoLocation && root.locationRead
+    repeat: true
+    onTriggered: root.detectLocation()
   }
 
   // The first read can race shell startup (seen with the built-in); one

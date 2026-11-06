@@ -332,7 +332,12 @@ var STRINGS = {
 // The language whose locales match a locale name ("sv_SE.UTF-8" → "sv"),
 // English otherwise.
 function langFor(localeName) {
-  var name = String(localeName || "").toLowerCase()
+  return matchLang(localeName) || "en"
+}
+
+// The plugin's language for a locale or language code, "" when it has none.
+function matchLang(localeName) {
+  var name = String(localeName || "").trim().toLowerCase()
   for (var lang in STRINGS) {
     var prefixes = STRINGS[lang].locales
     for (var i = 0; i < prefixes.length; i++) {
@@ -340,7 +345,15 @@ function langFor(localeName) {
       if (name.indexOf(p) === 0 && (name.length === p.length || /[_.@-]/.test(name.charAt(p.length)))) return lang
     }
   }
-  return "en"
+  return ""
+}
+
+// The language chosen in Omarchy (Setup > Language, the code in
+// ~/.config/omarchy/language) when the plugin has it, else the system
+// locale's. Without a choice there, Omarchy itself shows English, but the
+// locale still says what the user reads.
+function chooseLang(omarchyLanguage, localeName) {
+  return matchLang(omarchyLanguage) || langFor(localeName)
 }
 
 function strings(lang) {
@@ -814,6 +827,34 @@ function parseLocationFile(raw) {
     latitude: ok ? latitude : null,
     longitude: ok ? longitude : null
   }
+}
+
+// True when weather.json names no place (no name, no coordinates): the
+// plugin then reports for wherever geo.omarchy.org places this network.
+function isAutoLocation(location) {
+  var l = location || {}
+  return String(l.name || "") === "" && (l.latitude === null || l.latitude === undefined)
+}
+
+// The place to report for: weather.json's, or with none set there, the
+// detected one (never saved, so the setting stays automatic).
+function effectiveLocation(configured, detected) {
+  return isAutoLocation(configured) && detected ? detected : configured
+}
+
+// Omarchy's geo service, which the built-in weather widget uses too. It
+// answers in weather.json's shape: {"name", "latitude", "longitude", …}.
+var GEO_URL = "https://geo.omarchy.org/"
+
+function geoCommand(agent) {
+  return cappedCurl(["-fsS", "--max-time", "4", "-A", agent, "--url", GEO_URL])
+}
+
+// geo.omarchy.org's answer → a location, or null when it holds no usable place.
+function parseGeoLocation(raw) {
+  var place = parseLocationFile(raw)
+  if (!hasCoordinates(place) || Math.abs(place.latitude) > 90 || Math.abs(place.longitude) > 180) return null
+  return place
 }
 
 function parseGeocodingResults(raw) {
@@ -2065,6 +2106,13 @@ if (typeof module !== "undefined") {
     userAgent: userAgent,
     STRINGS: STRINGS,
     langFor: langFor,
+    matchLang: matchLang,
+    chooseLang: chooseLang,
+    isAutoLocation: isAutoLocation,
+    effectiveLocation: effectiveLocation,
+    GEO_URL: GEO_URL,
+    geoCommand: geoCommand,
+    parseGeoLocation: parseGeoLocation,
     strings: strings,
     formatNumber: formatNumber,
     roundTemp: roundTemp,

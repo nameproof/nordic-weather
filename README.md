@@ -17,8 +17,8 @@ weather widget does, just with added favorites.
 
 Follows Omarchy's theming colors, including the Radar!
 
-Languages: Swedish, Norwegian, Danish, Finnish or English, following the system
-locale; English for anything else.
+Languages: Swedish, Norwegian, Danish, Finnish or English, following the
+language chosen in Omarchy, else the system locale; English for anything else.
 
 <img width="1215" height="898" alt="screenshot-2026-09-29_12-15-56-cropped" src="https://github.com/user-attachments/assets/4551c485-867e-451f-8977-b1164179a2df" />
 <img width="1215" height="898" alt="screenshot-2026-09-29_12-15-28-cropped" src="https://github.com/user-attachments/assets/4ae46c34-307f-4d34-963b-9cc370fdbff1" />
@@ -92,3 +92,4 @@ uv run scripts/build-basemap.py   # download, extract, render, places
 - Radar and lightning: [yr.no](https://www.yr.no)
 - Map: © [OpenStreetMap](https://www.openstreetmap.org/copyright) contributors, ODbL
 - Place search: [Open-Meteo](https://open-meteo.com/en/docs/geocoding-api)
+- Location when none is set: Omarchy's geo service (geo.omarchy.org)

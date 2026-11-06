@@ -28,6 +28,7 @@ Scope {
     // checked (no downloads run in the test).
     function maybeDownloadYrTiles() { if (yrRadarKey !== "") test.downloadChecks.push(yrRadar.frames.length > 0) }
     function setLocationIfChanged(next) {}
+    function detectLocation() {}
   }
   Connections {
     target: service

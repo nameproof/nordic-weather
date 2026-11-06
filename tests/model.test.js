@@ -38,6 +38,16 @@ test("language follows locale, English fallback", () => {
   assert.equal(M.langFor(""), "en")
 })
 
+test("language: Omarchy's choice when the plugin has it, else the locale", () => {
+  assert.equal(M.chooseLang("", "sv_SE.UTF-8"), "sv")       // nothing chosen in Omarchy
+  assert.equal(M.chooseLang("sv\n", "en_US.UTF-8"), "sv")   // file content, with its newline
+  assert.equal(M.chooseLang("no", "sv_SE"), "nb")           // Omarchy's code for Norwegian
+  assert.equal(M.chooseLang("en", "sv_SE"), "en")           // English chosen on purpose
+  assert.equal(M.chooseLang("de", "fi_FI"), "fi")           // a language the plugin lacks
+  assert.equal(M.chooseLang("de", "de_DE"), "en")
+  assert.equal(M.matchLang("de"), "")
+})
+
 // Every language has what English has, of the same shape: a new one that
 // misses a string or a grammar form fails here, not on screen.
 test("languages: every entry is complete", () => {
@@ -573,6 +583,23 @@ test("location file and geocoding", () => {
     { name: "Alingsås", latitude: 57.93033, longitude: 12.53345 })
   assert.deepEqual(M.parseLocationFile("garbage"), { name: "", latitude: null, longitude: null })
   assert.deepEqual(M.parseLocationFile('{"name":"Malibu"}'), { name: "Malibu", latitude: null, longitude: null })
+
+  // No place set: the plugin reports for where geo.omarchy.org puts the network.
+  const unset = M.parseLocationFile("")
+  const set = { name: "Alingsås", latitude: 57.93, longitude: 12.53 }
+  const geo = M.parseGeoLocation('{"name":"Gothenburg","latitude":57.7072,"longitude":11.9668,"country":"SE","timezone":"Europe/Stockholm"}')
+  assert.deepEqual(geo, { name: "Gothenburg", latitude: 57.7072, longitude: 11.9668 })
+  assert.ok(M.isAutoLocation(unset))
+  assert.ok(!M.isAutoLocation(set))
+  assert.ok(!M.isAutoLocation({ name: "Malibu", latitude: null, longitude: null }))  // named: not automatic
+  assert.equal(M.effectiveLocation(unset, geo), geo)
+  assert.equal(M.effectiveLocation(set, geo), set)
+  assert.equal(M.effectiveLocation(unset, null), unset)
+  for (const bad of ["", "<html>", '{"name":"X"}', '{"name":"X","latitude":91,"longitude":12}', '{"latitude":57,"longitude":181}'])
+    assert.equal(M.parseGeoLocation(bad), null, bad)
+  const cmd = M.geoCommand("agent/1")
+  assert.deepEqual(cmd.slice(0, 5), M.cappedCurl([]).slice(0, 5))  // capped, HTTPS only
+  assert.deepEqual(cmd.slice(-2), ["--url", "https://geo.omarchy.org/"])
 
   const results = M.parseGeocodingResults(fixture("geocode-alings.json"))
   assert.equal(results[0].name, "Alingsås")

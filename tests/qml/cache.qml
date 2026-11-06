@@ -10,6 +10,7 @@ Scope {
     location: ({ name: "Test", latitude: 58, longitude: 12 })
     function maybeFetch(force) {}
     function setLocationIfChanged(next) {}
+    function detectLocation() {}
   }
   Timer {
     interval: 50
