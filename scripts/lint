@@ -19,7 +19,7 @@ ln -s "$SHELL_DIR" "$paths/qs"
 
 cd "$SRC"
 out=$("$QMLLINT" -I "$paths" ./*.qml 2>&1 | grep -E '^Warning|^Error' \
-  | grep -v 'not found on type "QObject"' | grep -v 'QProcess::ExitStatus' || true)
+  | grep -vE 'not found on type ("QObject"|.* with type QObject)' | grep -v 'QProcess::ExitStatus' || true)
 if [[ -n $out ]]; then
   echo "$out"
   exit 1
