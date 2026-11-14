@@ -368,6 +368,23 @@ test("chance of precipitation in quarters", () => {
   assert.equal(M.chanceQuarters(100), 4)
 })
 
+test("gust shadow outlines", () => {
+  const row = (speed, gust) => ({ wind: { speed, gust } })
+  assert.deepEqual(M.gustShadow([], 60, 20, 22), { mean: [], gust: [] })
+  assert.deepEqual(M.gustShadow([row(3, 6)], 0, 20, 22), { mean: [], gust: [] })
+
+  // Two rows on a 60 px scale (2 px per m/s): right edge, flat top, row centres, flat bottom.
+  const s = M.gustShadow([row(6, 12), row(15, 26)], 60, 20, 22)
+  assert.deepEqual(s.mean, [{ x: 60, y: 0 }, { x: 48, y: 0 }, { x: 48, y: 10 }, { x: 30, y: 32 }, { x: 30, y: 42 }, { x: 60, y: 42 }])
+  assert.deepEqual(s.gust.map((p) => p.x), [60, 36, 36, 8, 8, 60])
+
+  // Past the scale, the outline stops at the left edge; a missing gust falls back to the mean, a
+  // gust below the mean (rounding) never pulls inside it, and a missing speed counts as calm.
+  const t = M.gustShadow([row(20, 40), row(5, null), row(7, 6), row(null, null)], 60, 20, 22)
+  assert.deepEqual(t.gust.slice(2, 6).map((p) => p.x), [0, 50, 46, 60])
+  assert.deepEqual(t.mean.slice(2, 6).map((p) => p.x), [20, 50, 46, 60])
+})
+
 test("forecast parsing keeps periods", () => {
   assert.equal(alingsas.steps.length, 86)
   assert.equal(alingsas.steps[0].period1.symbol, "clearsky_day")

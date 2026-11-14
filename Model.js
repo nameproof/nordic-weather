@@ -752,6 +752,29 @@ function chanceQuarters(probability) {
   return isNum(probability) ? Math.max(0, Math.min(4, Math.round(probability / 25))) : 0
 }
 
+// The gust shadow behind a day's wind column in the hourly list: two
+// outlines, the mean wind and the gust, each growing leftwards from the right
+// edge on a 0–GUST_SHADOW_MAX m/s scale across `width`. Rows are `rowHeight`
+// tall and `pitch` apart; an outline passes through the row centres and runs
+// straight up and down to the top and bottom edges. A row without a gust
+// (MET leaves it out a few days ahead) contributes only its mean.
+var GUST_SHADOW_MAX = 30
+
+function gustShadow(rows, width, rowHeight, pitch) {
+  if (!rows || rows.length === 0 || !(width > 0)) return { mean: [], gust: [] }
+  var height = (rows.length - 1) * pitch + rowHeight
+  var x = function(speed) { return width - Math.min(speed, GUST_SHADOW_MAX) / GUST_SHADOW_MAX * width }
+  var outline = function(speeds) {
+    var points = [{ x: width, y: 0 }, { x: x(speeds[0]), y: 0 }]
+    for (var i = 0; i < speeds.length; i++) points.push({ x: x(speeds[i]), y: i * pitch + rowHeight / 2 })
+    points.push({ x: x(speeds[speeds.length - 1]), y: height }, { x: width, y: height })
+    return points
+  }
+  var means = rows.map(function(r) { var s = r.wind ? r.wind.speed : null; return isNum(s) && s > 0 ? s : 0 })
+  var gusts = rows.map(function(r, i) { var g = r.wind ? r.wind.gust : null; return isNum(g) ? Math.max(g, means[i]) : means[i] })
+  return { mean: outline(means), gust: outline(gusts) }
+}
+
 // ---------------------------------------------------------------- parsing
 
 // The byte ceiling also needs bounds on the objects and labels built from
@@ -2675,6 +2698,8 @@ if (typeof module !== "undefined") {
     windArrow: windArrow,
     formatPrecip: formatPrecip,
     chanceQuarters: chanceQuarters,
+    GUST_SHADOW_MAX: GUST_SHADOW_MAX,
+    gustShadow: gustShadow,
     parseTimeseries: parseTimeseries,
     parseSun: parseSun,
     parseMoon: parseMoon,

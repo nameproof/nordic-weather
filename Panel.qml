@@ -302,6 +302,7 @@ Panel {
   readonly property int radarMapHeight: 761
 
   // Column widths for the hourly table, shared by every row.
+  readonly property int hourRowHeight: Style.space(20)
   readonly property int colHour: Style.space(26)
   readonly property int colIcon: Style.space(24)
   readonly property int colTemp: Style.space(52)
@@ -315,12 +316,17 @@ Panel {
   // Unlit part of the chance pie: the popup background moved a little
   // towards the text colour.
   readonly property color pieTrack: Qt.tint(mapLand, Qt.rgba(fg.r, fg.g, fg.b, 0.18))
-  // Wind: speed | arrow | gust. Sized from the font so a two-digit gust
-  // ends exactly at the row's right padding, mirroring the hour on the left.
+  // Wind: speed | arrow, the arrow ending at the row's right padding.
   readonly property int windSpeedWidth: Style.space(18)
   readonly property int windArrowWidth: Style.space(12)
   readonly property int windGap: Style.space(4)
-  readonly property int colWind: windSpeedWidth + windArrowWidth + Math.ceil(gustMetrics.advanceWidth) + windGap * 2
+  readonly property int colWind: windSpeedWidth + windGap + windArrowWidth
+  // Gusts as a shadow behind the wind column (Model.gustShadow): the gust
+  // and the mean wind as faint areas growing leftwards from the row's right
+  // edge, 0–30 m/s across this width. Both take the same fill, so the mean,
+  // drawn over the gust, reads a step darker.
+  readonly property int gustShadowWidth: Style.space(60)
+  readonly property color gustShadowFill: Qt.rgba(fg.r, fg.g, fg.b, 0.055)
 
   // Chance of precipitation in quarters (Model.chanceQuarters): a slice from
   // twelve o'clock on a faint disc, dimmed at one quarter like low
@@ -509,10 +515,10 @@ Panel {
   }
 
   TextMetrics {
-    id: gustMetrics
+    id: digitMetrics
     font.family: root.fontFamily
     font.pixelSize: Style.font.body
-    text: "(00)"
+    text: "0"
   }
 
   KeyboardPanel {
@@ -1217,7 +1223,7 @@ Panel {
                   anchors.topMargin: dayTitle.topPadding
                   anchors.bottomMargin: dayTitle.bottomPadding
 
-                  readonly property real charWidth: gustMetrics.advanceWidth / 4
+                  readonly property real charWidth: digitMetrics.advanceWidth
                   readonly property real gap: Style.space(6)
                   readonly property real windX: width - Style.space(8) - root.colWind
                   readonly property real popRight: windX - gap - root.colAmount - gap
@@ -1239,116 +1245,142 @@ Panel {
                   // drop over the chance pie.
                   ColumnIcon { center: columnIcons.tempRight - columnIcons.charWidth; text: "\ue34e"; glyphScale: 11 / 14 }  // thermometer exterior
                   ColumnIcon { center: columnIcons.popRight - root.colPop / 2; text: daySection.modelData.precipGlyph }  // rain, sleet or snow
-                  // Over the arrow, between speed and gust.
+                  // Centred over the speed and arrow.
                   ColumnIcon {
-                    center: columnIcons.windX + root.windSpeedWidth + root.windGap + root.windArrowWidth / 2
+                    center: columnIcons.windX + root.colWind / 2
                     text: "\ue34b"  // strong wind
                   }
                 }
               }
 
-              Repeater {
-                model: ScriptModel { values: daySection.modelData.rows; objectProp: "key" }
+              // The hours over their gust shadow.
+              Item {
+                width: parent.width
+                height: dayRows.height
 
-                Row {
-                  id: hourRow
-                  required property var modelData
-                  x: Style.space(8)
-                  width: weatherColumn.width - Style.space(16)
-                  height: Style.space(20)
-                  spacing: Style.space(6)
+                Shape {
+                  id: gustShadow
+                  readonly property var outlines: Model.gustShadow(daySection.modelData.rows, root.gustShadowWidth,
+                                                                   root.hourRowHeight, root.hourRowHeight + dayRows.spacing)
+                  x: parent.width - Style.space(8) - width
+                  width: root.gustShadowWidth
+                  height: dayRows.height
+                  preferredRendererType: Shape.CurveRenderer
 
-                  Text {
-                    width: root.colHour
-                    anchors.verticalCenter: parent.verticalCenter
-                    textFormat: Text.PlainText
-                    text: hourRow.modelData.hour
-                    color: root.dim
-                    font.family: root.fontFamily
-                    font.pixelSize: Style.font.body
+                  ShapePath {
+                    fillColor: root.gustShadowFill
+                    strokeColor: "transparent"
+                    PathPolyline { path: gustShadow.outlines.gust.map(p => Qt.point(p.x, p.y)) }
                   }
-                  Text {
-                    width: root.colIcon
-                    anchors.verticalCenter: parent.verticalCenter
-                    horizontalAlignment: Text.AlignHCenter
-                    textFormat: Text.PlainText
-                    text: hourRow.modelData.icon
-                    color: root.fg
-                    font.family: root.fontFamily
-                    font.pixelSize: Style.font.title
+                  ShapePath {
+                    fillColor: root.gustShadowFill
+                    strokeColor: "transparent"
+                    PathPolyline { path: gustShadow.outlines.mean.map(p => Qt.point(p.x, p.y)) }
                   }
-                  Text {
-                    width: parent.width - root.colHour - root.colIcon - root.colTemp - root.colPop - root.colAmount - root.colWind - parent.spacing * 6
-                    anchors.verticalCenter: parent.verticalCenter
-                    textFormat: Text.PlainText
-                    text: hourRow.modelData.description
-                    elide: Text.ElideRight
-                    color: root.fg
-                    font.family: root.fontFamily
-                    font.pixelSize: Style.font.body
-                  }
-                  Text {
-                    width: root.colTemp
-                    anchors.verticalCenter: parent.verticalCenter
-                    horizontalAlignment: Text.AlignRight
-                    textFormat: Text.PlainText
-                    text: hourRow.modelData.temp + "°"
-                    color: root.fg
-                    font.family: root.fontFamily
-                    font.pixelSize: Style.font.body
-                  }
-                  Item {
-                    width: root.colPop
-                    height: root.pieSize
-                    anchors.verticalCenter: parent.verticalCenter
+                }
 
-                    ChancePie {
-                      anchors.centerIn: parent
-                      quarters: hourRow.modelData.precip.quarters
-                    }
-                  }
-                  // Left-aligned, next to the pie it belongs with.
-                  Text {
-                    width: root.colAmount
-                    anchors.verticalCenter: parent.verticalCenter
-                    textFormat: Text.PlainText
-                    text: hourRow.modelData.precip.text + (hourRow.modelData.precip.text !== "" && hourRow.modelData.periodHours === 6 ? "/6" + root.t.hour : "")
-                    color: root.fg
-                    font.family: root.fontFamily
-                    font.pixelSize: Style.font.bodySmall
-                  }
-                  // Speed (right-aligned), arrow and gust (left-aligned) in
-                  // fixed sub-columns so each lines up across rows.
-                  Row {
-                    width: root.colWind
-                    anchors.verticalCenter: parent.verticalCenter
-                    spacing: root.windGap
-                    visible: hourRow.modelData.wind.speed !== null
+                Column {
+                  id: dayRows
+                  width: parent.width
+                  spacing: daySection.spacing
 
-                    Text {
-                      width: root.windSpeedWidth
-                      horizontalAlignment: Text.AlignRight
-                      textFormat: Text.PlainText
-                      text: String(hourRow.modelData.wind.speed)
-                      color: root.fg
-                      font.family: root.fontFamily
-                      font.pixelSize: Style.font.body
-                    }
-                    Text {
-                      width: root.windArrowWidth
-                      horizontalAlignment: Text.AlignHCenter
-                      textFormat: Text.PlainText
-                      text: hourRow.modelData.wind.arrow
-                      color: root.fg
-                      font.family: root.fontFamily
-                      font.pixelSize: Style.font.body
-                    }
-                    Text {
-                      textFormat: Text.PlainText
-                      text: hourRow.modelData.wind.gust === null ? "" : "(" + hourRow.modelData.wind.gust + ")"
-                      color: root.faint
-                      font.family: root.fontFamily
-                      font.pixelSize: Style.font.body
+                  Repeater {
+                    model: ScriptModel { values: daySection.modelData.rows; objectProp: "key" }
+
+                    Row {
+                      id: hourRow
+                      required property var modelData
+                      x: Style.space(8)
+                      width: weatherColumn.width - Style.space(16)
+                      height: root.hourRowHeight
+                      spacing: Style.space(6)
+
+                      Text {
+                        width: root.colHour
+                        anchors.verticalCenter: parent.verticalCenter
+                        textFormat: Text.PlainText
+                        text: hourRow.modelData.hour
+                        color: root.dim
+                        font.family: root.fontFamily
+                        font.pixelSize: Style.font.body
+                      }
+                      Text {
+                        width: root.colIcon
+                        anchors.verticalCenter: parent.verticalCenter
+                        horizontalAlignment: Text.AlignHCenter
+                        textFormat: Text.PlainText
+                        text: hourRow.modelData.icon
+                        color: root.fg
+                        font.family: root.fontFamily
+                        font.pixelSize: Style.font.title
+                      }
+                      Text {
+                        width: parent.width - root.colHour - root.colIcon - root.colTemp - root.colPop - root.colAmount - root.colWind - parent.spacing * 6
+                        anchors.verticalCenter: parent.verticalCenter
+                        textFormat: Text.PlainText
+                        text: hourRow.modelData.description
+                        elide: Text.ElideRight
+                        color: root.fg
+                        font.family: root.fontFamily
+                        font.pixelSize: Style.font.body
+                      }
+                      Text {
+                        width: root.colTemp
+                        anchors.verticalCenter: parent.verticalCenter
+                        horizontalAlignment: Text.AlignRight
+                        textFormat: Text.PlainText
+                        text: hourRow.modelData.temp + "°"
+                        color: root.fg
+                        font.family: root.fontFamily
+                        font.pixelSize: Style.font.body
+                      }
+                      Item {
+                        width: root.colPop
+                        height: root.pieSize
+                        anchors.verticalCenter: parent.verticalCenter
+
+                        ChancePie {
+                          anchors.centerIn: parent
+                          quarters: hourRow.modelData.precip.quarters
+                        }
+                      }
+                      // Left-aligned, next to the pie it belongs with.
+                      Text {
+                        width: root.colAmount
+                        anchors.verticalCenter: parent.verticalCenter
+                        textFormat: Text.PlainText
+                        text: hourRow.modelData.precip.text + (hourRow.modelData.precip.text !== "" && hourRow.modelData.periodHours === 6 ? "/6" + root.t.hour : "")
+                        color: root.fg
+                        font.family: root.fontFamily
+                        font.pixelSize: Style.font.bodySmall
+                      }
+                      // Speed (right-aligned) and arrow in fixed sub-columns so
+                      // each lines up across rows.
+                      Row {
+                        width: root.colWind
+                        anchors.verticalCenter: parent.verticalCenter
+                        spacing: root.windGap
+                        visible: hourRow.modelData.wind.speed !== null
+
+                        Text {
+                          width: root.windSpeedWidth
+                          horizontalAlignment: Text.AlignRight
+                          textFormat: Text.PlainText
+                          text: String(hourRow.modelData.wind.speed)
+                          color: root.fg
+                          font.family: root.fontFamily
+                          font.pixelSize: Style.font.body
+                        }
+                        Text {
+                          width: root.windArrowWidth
+                          horizontalAlignment: Text.AlignHCenter
+                          textFormat: Text.PlainText
+                          text: hourRow.modelData.wind.arrow
+                          color: root.fg
+                          font.family: root.fontFamily
+                          font.pixelSize: Style.font.body
+                        }
+                      }
                     }
                   }
                 }
