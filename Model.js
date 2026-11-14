@@ -674,6 +674,44 @@ function iconForSymbol(code) {
   return ""  // snow
 }
 
+// The hero's sky colour for a symbol code: blue by a clear night, warm by a
+// clear day, grey when overcast, cooler blues for rain and snow. Fixed like
+// the radar's water tint; the panel mixes it into the theme's background.
+var SKY_COLORS = {
+  clearNight: "#4b5fc4", clearDay: "#f2a541", partlyNight: "#5b6699", partlyDay: "#c59b5a",
+  cloudy: "#8a93a6", fog: "#9aa1a9", rain: "#3f86b8", sleet: "#6f9cc0", snow: "#a9c7e8", thunder: "#6a5aa8"
+}
+function skyColor(code) {
+  var sym = splitSymbol(code)
+  var night = sym.variant === "night"
+  switch (sym.base) {
+  case "clearsky":
+  case "fair": return night ? SKY_COLORS.clearNight : SKY_COLORS.clearDay
+  case "partlycloudy": return night ? SKY_COLORS.partlyNight : SKY_COLORS.partlyDay
+  case "cloudy": return SKY_COLORS.cloudy
+  case "fog": return SKY_COLORS.fog
+  }
+  var p = parsePrecipBase(sym.base)
+  if (!p) return SKY_COLORS.cloudy
+  if (p.thunder) return SKY_COLORS.thunder
+  return SKY_COLORS[p.kind] || SKY_COLORS.cloudy
+}
+
+// CIELAB lightness (0–100) of a colour with r, g, b in 0–1 (a QML color).
+function lightness(c) {
+  var lin = function(v) { return v <= 0.04045 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4) }
+  var y = 0.2126 * lin(c.r) + 0.7152 * lin(c.g) + 0.0722 * lin(c.b)
+  return y > 216 / 24389 ? 116 * Math.cbrt(y) - 16 : y * 24389 / 27
+}
+
+// Opacity for a faint mark in the text colour that lifts the background by
+// the same lightness (7 L*) whatever the theme's contrast: about 7 % on a
+// near-white-on-black theme, more on softer ones.
+function faintGlyphAlpha(fg, bg) {
+  var contrast = Math.abs(lightness(fg) - lightness(bg))
+  return Math.max(0.05, Math.min(0.16, contrast > 0 ? 7 / contrast : 0.16))
+}
+
 // ---------------------------------------------------------------- wind
 
 function compassIndex(deg) {
@@ -1068,6 +1106,7 @@ function buildCurrent(forecast, nowcast, nowMs, lang) {
 
   return {
     icon: iconForSymbol(symbol),
+    sky: skyColor(symbol),
     description: describeSymbol(symbol, lang),
     temp: roundTemp(values.temp),
     feelsLike: roundTemp(values.feelsLike),
@@ -2582,6 +2621,8 @@ if (typeof module !== "undefined") {
     parseFmiRss: parseFmiRss,
     parseFmiAtom: parseFmiAtom,
     buildWarnings: buildWarnings,
+    skyColor: skyColor,
+    faintGlyphAlpha: faintGlyphAlpha,
     warningStoreText: warningStoreText,
     parseWarningStore: parseWarningStore,
     userAgent: userAgent,

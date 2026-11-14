@@ -308,6 +308,10 @@ Panel {
   readonly property int colPop: Style.space(40)
   readonly property int colAmount: Style.space(92)
   readonly property int pieSize: Style.space(12)
+  // The hero's sky glyph (skyClip): how faint it is, the same to the eye in
+  // every theme (Model.faintGlyphAlpha), and the room the values leave it.
+  readonly property real skyGlyphStrength: Model.faintGlyphAlpha(fg, mapLand)
+  readonly property int skyGlyphRoom: Math.round(skyGlow.height * 0.67) - panel.padding
   // Unlit part of the chance pie: the popup background moved a little
   // towards the text colour.
   readonly property color pieTrack: Qt.tint(mapLand, Qt.rgba(fg.r, fg.g, fg.b, 0.18))
@@ -547,6 +551,122 @@ Panel {
         else if (key === "p" && root.yrRadarActive) root.togglePause()
       }
 
+      // The hero's sky: a glow from the top-right corner in a colour that
+      // follows the weather (Model.skyColor), mixed into the panel background
+      // and faded out before the radar line, with the condition glyph large
+      // and faint, high in that corner. Drawn under the forecast, out to the
+      // panel's edges (into its padding), and scrolled with it.
+      Item {
+        id: skyClip
+        readonly property real inset: panel.padding
+        // Inner corner radius of the card (Hyprland's rounding, less the border).
+        readonly property real corner: Math.max(0, Style.cornerRadius - Border.top(panel.borderSpec))
+        x: -inset
+        y: -inset
+        width: skyGlow.width
+        height: weatherScroll.height + inset
+        clip: true
+        visible: root.view.ready && !!root.view.current
+
+        Item {
+          id: skyGlow
+          y: -weatherScroll.contentY
+          // The forecast column out to the card's edges. With the radar open
+          // the glow carries on past the column, into the gap and the margin
+          // above the map, and fades out there; the map covers the rest.
+          readonly property real baseWidth: weatherScroll.width + skyClip.inset * 2
+          width: baseWidth + (root.radarOpen ? root.radarGap + Style.space(40) : 0)
+          height: hero.height + skyClip.inset
+          readonly property color sky: root.view.current ? root.view.current.sky : root.mapLand
+          // An ellipse 110 % of the width by 170 % of the height around the
+          // hero's top right (CSS radial-gradient terms), the same with the
+          // radar open or not: a circular gradient drawn stretched, then
+          // squashed back.
+          readonly property real rx: baseWidth * 1.1
+          readonly property real ry: Math.max(1, height * 1.7)
+          readonly property real centerX: baseWidth * 0.88
+          readonly property real stretchedHeight: height * rx / ry
+
+          Shape {
+            width: skyGlow.width
+            height: skyGlow.stretchedHeight
+            transform: Scale { yScale: skyGlow.ry / skyGlow.rx }
+            ShapePath {
+              strokeColor: "transparent"
+              fillGradient: RadialGradient {
+                centerX: skyGlow.centerX
+                centerY: 0
+                centerRadius: skyGlow.rx
+                focalX: skyGlow.centerX
+                focalY: 0
+                GradientStop { position: 0; color: Qt.tint(root.mapLand, Qt.rgba(skyGlow.sky.r, skyGlow.sky.g, skyGlow.sky.b, 0.42)) }
+                GradientStop { position: 0.55; color: Qt.tint(root.mapLand, Qt.rgba(skyGlow.sky.r, skyGlow.sky.g, skyGlow.sky.b, 0.14)) }
+                GradientStop { position: 1; color: root.mapLand }
+              }
+              startX: 0; startY: 0
+              PathLine { x: skyGlow.width; y: 0 }
+              PathLine { x: skyGlow.width; y: skyGlow.stretchedHeight }
+              PathLine { x: 0; y: skyGlow.stretchedHeight }
+              PathLine { x: 0; y: 0 }
+            }
+          }
+
+          // Fade into the panel background towards the bottom, and towards
+          // the radar map when it is open.
+          Rectangle {
+            anchors.fill: parent
+            gradient: Gradient {
+              GradientStop { position: 0.55; color: Qt.rgba(root.mapLand.r, root.mapLand.g, root.mapLand.b, 0) }
+              GradientStop { position: 1; color: root.mapLand }
+            }
+          }
+          Rectangle {
+            anchors.fill: parent
+            visible: root.radarOpen
+            gradient: Gradient {
+              orientation: Gradient.Horizontal
+              GradientStop { position: (skyGlow.baseWidth - skyClip.inset) / skyGlow.width; color: Qt.rgba(root.mapLand.r, root.mapLand.g, root.mapLand.b, 0) }
+              GradientStop { position: 1; color: root.mapLand }
+            }
+          }
+
+          // The condition glyph, about as tall as the hero, high in the
+          // corner and running off the top edge, like the sun high in the sky.
+          Text {
+            textFormat: Text.PlainText
+            text: root.view.current ? root.view.current.icon : ""
+            color: Qt.rgba(root.fg.r, root.fg.g, root.fg.b, root.skyGlyphStrength)
+            font.family: root.fontFamily
+            font.pixelSize: Math.round(skyGlow.height)
+            x: skyGlow.baseWidth - width - Math.round(skyGlow.height * 0.06)
+            y: -Math.round(skyGlow.height * 0.40)
+          }
+        }
+
+        // Rounded card corners: the area outside each corner's arc in the
+        // panel background, fixed to the card while the glow scrolls (top
+        // right only when it is the card's corner).
+        Repeater {
+          model: skyClip.corner > 0 ? (root.radarOpen ? [false] : [false, true]) : []
+          Shape {
+            required property bool modelData
+            x: modelData ? skyClip.width - skyClip.corner : 0
+            width: skyClip.corner
+            height: skyClip.corner
+            preferredRendererType: Shape.CurveRenderer
+            transform: Scale { origin.x: skyClip.corner / 2; xScale: modelData ? -1 : 1 }
+            ShapePath {
+              fillColor: root.mapLand
+              strokeColor: "transparent"
+              startX: 0; startY: 0
+              PathLine { x: skyClip.corner; y: 0 }
+              PathArc { x: 0; y: skyClip.corner; radiusX: skyClip.corner; radiusY: skyClip.corner; direction: PathArc.Counterclockwise }
+              PathLine { x: 0; y: 0 }
+            }
+          }
+        }
+      }
+
       Flickable {
         id: weatherScroll
         anchors.left: parent.left
@@ -564,102 +684,27 @@ Panel {
           width: weatherScroll.width
           spacing: Style.space(12)
 
-          // ---- Hero: icon + temperature + condition left; place and stats right.
-          // A little room above and more below, so the stats' second line
-          // doesn't crowd the nowcast row.
+          // ---- Hero: the place on top; the temperature with the condition and
+          // how it feels beside it; the values on the right. Its sky (the glow
+          // and the faint glyph) is drawn under the list by skyClip, out to the
+          // panel's edges.
           Item {
             id: hero
-            readonly property int padTop: Style.space(4)
-            readonly property int padBottom: Style.space(8)
             width: parent.width
-            height: Math.max(heroLeft.height, heroRight.height) + padTop + padBottom
+            height: placeRow.height + Style.space(8) + Math.max(heroMain.height, statsRow.height) + Style.space(4)
 
-            // Icon + temperature + condition. The icon is centred on the
-            // painted digits of the temperature (not on the whole block,
-            // and not on the glyph's line box, which has uneven padding).
+            // Place name; click to search or pick a favourite. The search
+            // field takes its place while editing.
             Item {
-              id: heroLeft
+              id: placeRow
               anchors.left: parent.left
               anchors.leftMargin: Style.space(12)
-              anchors.verticalCenter: parent.verticalCenter
-              anchors.verticalCenterOffset: (hero.padTop - hero.padBottom) / 2
-              visible: root.view.ready
-              width: heroIcon.implicitWidth + Style.space(14) + heroTemp.width
-              height: heroTemp.height
+              anchors.top: parent.top
+              width: parent.width - Style.space(24)
+              height: root.editingLocation ? editRow.height : placeName.height
 
-              TextMetrics {
-                id: heroIconMetrics
-                font: heroIcon.font
-                text: heroIcon.text
-              }
-              TextMetrics {
-                id: tempMetrics
-                font: tempBig.font
-                text: tempBig.text
-              }
-
-              Text {
-                id: heroIcon
-                textFormat: Text.PlainText
-                text: root.view.current ? root.view.current.icon : ""
-                color: root.fg
-                font.family: root.fontFamily
-                // Decorative condition glyph, deliberately outside the Style.font scale.
-                font.pixelSize: 56
-                // Metrics rects are relative to the baseline (y grows downwards).
-                y: (tempBig.baselineOffset + tempMetrics.tightBoundingRect.y + tempMetrics.tightBoundingRect.height / 2)
-                  - (baselineOffset + heroIconMetrics.tightBoundingRect.y + heroIconMetrics.tightBoundingRect.height / 2)
-              }
-
-              Column {
-                id: heroTemp
-                anchors.left: heroIcon.right
-                anchors.leftMargin: Style.space(14)
-                spacing: Style.space(2)
-
-                Row {
-                  spacing: Style.space(2)
-                  Text {
-                    id: tempBig
-                    textFormat: Text.PlainText
-                    text: root.view.current ? String(root.view.current.temp) : "—"
-                    color: root.fg
-                    font.family: root.fontFamily
-                    font.pixelSize: 48
-                    font.bold: true
-                  }
-                  Text {
-                    textFormat: Text.PlainText
-                    text: "°C"
-                    color: root.fg
-                    font.family: root.fontFamily
-                    font.pixelSize: Style.font.display
-                    anchors.top: tempBig.top
-                    anchors.topMargin: Style.space(8)
-                  }
-                }
-
-                Text {
-                  textFormat: Text.PlainText
-                  text: root.view.current ? root.view.current.description : ""
-                  color: root.dim
-                  font.family: root.fontFamily
-                  font.pixelSize: Style.font.body
-                }
-              }
-            }
-
-            Column {
-              id: heroRight
-              anchors.right: parent.right
-              anchors.rightMargin: Style.space(16)
-              anchors.verticalCenter: parent.verticalCenter
-              anchors.verticalCenterOffset: (hero.padTop - hero.padBottom) / 2
-              spacing: Style.space(12)
-
-              // Place name; click to search or pick a favourite.
               Row {
-                anchors.right: parent.right
+                id: placeName
                 visible: !root.editingLocation && root.hasLocation
                 spacing: Style.space(6)
 
@@ -670,7 +715,7 @@ Panel {
                   text: "\uf041"  // nf-fa-map_marker
                   color: root.dim
                   font.family: root.fontFamily
-                  font.pixelSize: Style.font.body
+                  font.pixelSize: Style.font.caption
                   anchors.verticalCenter: parent.verticalCenter
                 }
                 Text {
@@ -678,14 +723,14 @@ Panel {
                   text: root.location.name.toUpperCase()
                   color: root.dim
                   font.family: root.fontFamily
-                  font.pixelSize: Style.font.body
+                  font.pixelSize: Style.font.caption
                   font.letterSpacing: 1
                   anchors.verticalCenter: parent.verticalCenter
                 }
               }
 
               Row {
-                anchors.right: parent.right
+                id: editRow
                 visible: root.editingLocation
                 spacing: Style.space(6)
 
@@ -743,63 +788,135 @@ Panel {
                   }
                 }
               }
+            }
 
-              // Gaps shrink (24 down to 10) when wide values would otherwise
-              // run into the temperature.
-              Row {
-                id: statsRow
-                anchors.right: parent.right
-                visible: root.view.ready
-                readonly property real available: heroRight.parent.width - heroRight.anchors.rightMargin
-                  - (heroLeft.x + heroLeft.width) - Style.space(16)
-                readonly property real columnsWidth: {
-                  var sum = 0
-                  for (var i = 0; i < children.length; i++) sum += children[i].implicitWidth
-                  return sum
+            // Temperature, then the condition with how it feels under it.
+            Row {
+              id: heroMain
+              anchors.left: parent.left
+              anchors.leftMargin: Style.space(12)
+              anchors.top: placeRow.bottom
+              anchors.topMargin: Style.space(8)
+              visible: root.view.ready
+              spacing: Style.space(12)
+
+              // A tight box (0.95 of the font size) with the digits centred
+              // in it, rather than the font's full line spacing, which would
+              // leave the hero tall with empty space above and below them.
+              Item {
+                id: tempBox
+                width: tempBig.width + Style.space(2) + tempUnit.width
+                height: Math.round(tempBig.font.pixelSize * 0.95)
+
+                TextMetrics {
+                  id: tempMetrics
+                  font: tempBig.font
+                  text: tempBig.text
                 }
-                spacing: Math.max(Style.space(10), Math.min(Style.space(24), Math.floor((available - columnsWidth) / 3)))
+                Text {
+                  id: tempBig
+                  textFormat: Text.PlainText
+                  text: root.view.current ? String(root.view.current.temp) : "—"
+                  color: root.fg
+                  font.family: root.fontFamily
+                  // Deliberately outside the Style.font scale, like the glyph.
+                  font.pixelSize: 46
+                  font.bold: true
+                  // Metrics rects are relative to the baseline (y grows downwards).
+                  y: Math.round((tempBox.height - tempMetrics.tightBoundingRect.height) / 2
+                     - (baselineOffset + tempMetrics.tightBoundingRect.y))
+                }
+                Text {
+                  id: tempUnit
+                  anchors.left: tempBig.right
+                  anchors.leftMargin: Style.space(2)
+                  textFormat: Text.PlainText
+                  text: "°C"
+                  color: root.fg
+                  font.family: root.fontFamily
+                  font.pixelSize: Math.round(Style.font.display * 0.75)
+                }
+              }
 
-                Repeater {
-                  model: root.view.current ? [
-                    { label: root.t.feels, value: root.view.current.feelsLike === null ? "—" : root.view.current.feelsLike + "°", sub: "" },
-                    { label: root.t.wind, value: root.view.current.wind.speed === null ? "—"
-                        : root.view.current.wind.speed + " m/s " + root.view.current.wind.arrow,
-                      sub: root.view.current.wind.gust === null ? "" : "(" + root.t.gust + " " + root.view.current.wind.gust + ")" },
-                    { label: root.t.humidity, value: root.view.current.humidity === null ? "—" : root.view.current.humidity + "%", sub: "" },
-                    { label: root.t.pressure, value: root.view.current.pressure === null ? "—"
-                        : root.view.current.pressure.value + " hPa " + root.view.current.pressure.arrow,
-                      sub: root.view.current.pressure && root.view.current.pressure.changeText !== ""
-                        ? "(" + root.view.current.pressure.changeText + ")" : "" }
-                  ] : []
+              Column {
+                anchors.verticalCenter: parent.verticalCenter
+                spacing: Style.space(2)
 
-                  Column {
-                    id: statColumn
-                    required property var modelData
-                    spacing: Style.space(4)
+                Text {
+                  textFormat: Text.PlainText
+                  text: root.view.current ? root.view.current.description : ""
+                  color: root.fg
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.subtitle
+                  font.bold: true
+                }
+                Text {
+                  textFormat: Text.PlainText
+                  visible: !!root.view.current && root.view.current.feelsLike !== null
+                  text: root.view.current ? root.t.feels + " " + root.view.current.feelsLike + "°" : ""
+                  color: root.dim
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.bodySmall
+                }
+              }
+            }
 
-                    Text {
-                      textFormat: Text.PlainText
-                      text: statColumn.modelData.label.toUpperCase()
-                      color: root.dim
-                      font.family: root.fontFamily
-                      font.pixelSize: Style.font.caption
-                      font.letterSpacing: 1
-                    }
-                    Text {
-                      textFormat: Text.PlainText
-                      text: statColumn.modelData.value
-                      color: root.fg
-                      font.family: root.fontFamily
-                      font.pixelSize: Style.font.title
-                    }
-                    Text {
-                      textFormat: Text.PlainText
-                      visible: statColumn.modelData.sub !== ""
-                      text: statColumn.modelData.sub
-                      color: root.dim
-                      font.family: root.fontFamily
-                      font.pixelSize: Style.font.caption
-                    }
+            // Wind, humidity, pressure, each with its small print under it.
+            // They stop short of the panel's edge, leaving the corner to the
+            // sky glyph; the gaps between them shrink (14 down to 10) when wide
+            // values would otherwise run into the condition.
+            Row {
+              id: statsRow
+              anchors.right: parent.right
+              anchors.rightMargin: root.skyGlyphRoom
+              anchors.verticalCenter: heroMain.verticalCenter
+              visible: root.view.ready
+              readonly property real available: hero.width - root.skyGlyphRoom - (heroMain.x + heroMain.width) - Style.space(16)
+              readonly property real columnsWidth: {
+                var sum = 0
+                for (var i = 0; i < children.length; i++) sum += children[i].implicitWidth
+                return sum
+              }
+              spacing: Math.max(Style.space(10), Math.min(Style.space(14), Math.floor((available - columnsWidth) / 2)))
+
+              Repeater {
+                model: root.view.current ? [
+                  { label: root.t.wind, value: root.view.current.wind.speed === null ? "—"
+                      : root.view.current.wind.speed + " m/s " + root.view.current.wind.arrow,
+                    sub: root.view.current.wind.gust === null ? "" : root.t.gust + " " + root.view.current.wind.gust },
+                  { label: root.t.humidity, value: root.view.current.humidity === null ? "—" : root.view.current.humidity + "%", sub: "" },
+                  { label: root.t.pressure, value: root.view.current.pressure === null ? "—"
+                      : root.view.current.pressure.value + " hPa " + root.view.current.pressure.arrow,
+                    sub: root.view.current.pressure ? root.view.current.pressure.changeText : "" }
+                ] : []
+
+                Column {
+                  id: statColumn
+                  required property var modelData
+                  spacing: Style.space(2)
+
+                  Text {
+                    textFormat: Text.PlainText
+                    text: statColumn.modelData.label.toUpperCase()
+                    color: root.dim
+                    font.family: root.fontFamily
+                    font.pixelSize: Style.font.caption
+                    font.letterSpacing: 1
+                  }
+                  Text {
+                    textFormat: Text.PlainText
+                    text: statColumn.modelData.value
+                    color: root.fg
+                    font.family: root.fontFamily
+                    font.pixelSize: Style.font.body
+                  }
+                  Text {
+                    textFormat: Text.PlainText
+                    visible: statColumn.modelData.sub !== ""
+                    text: statColumn.modelData.sub
+                    color: root.dim
+                    font.family: root.fontFamily
+                    font.pixelSize: Style.font.caption
                   }
                 }
               }
@@ -1388,7 +1505,7 @@ Panel {
                 anchors.right: parent.right
                 anchors.rightMargin: Style.space(8)
                 textFormat: Text.PlainText
-                text: root.t.stale + (root.view.updatedAt !== "" ? " · " + root.t.forecastFrom + " " + root.view.updatedAt : "")
+                text: root.t.stale + (root.view.updatedAt !== "" ? " " + root.t.forecastFrom + " " + root.view.updatedAt : "")
                 color: root.fg
                 font.family: root.fontFamily
                 font.pixelSize: Style.font.caption

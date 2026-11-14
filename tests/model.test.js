@@ -1121,3 +1121,21 @@ test("radar gap note: only when frames are missing from the loop", () => {
   assert.equal(M.radarGapNote(at([0, 5, 10, 50]), "sv"), "Luckor i yr.no:s radar – tiden kan hoppa mellan bilder")
   assert.equal(M.radarGapNote([], "en"), "")
 })
+
+test("hero sky: colour follows the weather, the glyph is equally faint in every theme", () => {
+  assert.equal(M.skyColor("clearsky_night"), "#4b5fc4")
+  assert.equal(M.skyColor("clearsky_day"), "#f2a541")
+  assert.equal(M.skyColor("fair_polartwilight"), "#f2a541")
+  assert.equal(M.skyColor("partlycloudy_night"), "#5b6699")
+  assert.equal(M.skyColor("cloudy"), "#8a93a6")
+  assert.equal(M.skyColor("lightrain"), "#3f86b8")
+  assert.equal(M.skyColor("heavysnowshowers_day"), "#a9c7e8")
+  assert.equal(M.skyColor("rainandthunder"), "#6a5aa8")
+  assert.equal(M.skyColor(""), "#8a93a6")
+  assert.match(M.buildCurrent(alingsas, null, NOW, "sv").sky, /^#[0-9a-f]{6}$/)
+  const rgb = (hex) => ({ r: parseInt(hex.slice(1, 3), 16) / 255, g: parseInt(hex.slice(3, 5), 16) / 255, b: parseInt(hex.slice(5, 7), 16) / 255 })
+  const alpha = (fg, bg) => M.faintGlyphAlpha(rgb(fg), rgb(bg))
+  assert.ok(Math.abs(alpha("#fafcfb", "#0c0b0c") - 0.073) < 0.002)   // Last Horizon
+  assert.ok(alpha("#9fa7c8", "#020408") > alpha("#fafcfb", "#0c0b0c")) // softer contrast: stronger
+  assert.equal(alpha("#808080", "#808080"), 0.16)                      // no contrast: the cap
+})
