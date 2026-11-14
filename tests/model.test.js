@@ -80,7 +80,6 @@ test("Norwegian: descriptions, dates, numbers and hours", () => {
   assert.equal(M.dayTitle(Date.parse("2026-09-28T00:00:00+02:00"), today, "nb"), "Mandag 28. sep")
   assert.equal(M.dayTitle(today, today, "nb"), "I dag 26. sep")
   assert.equal(M.formatNumber(0.4, 1, "nb"), "0,4")
-  assert.equal(M.formatPrecip(0.2, 0, 1.4, "nb"), "0–1,4 mm")
   assert.ok(M.geocodeUrl("Bergen", "nb").endsWith("&language=no"))
   const frames = [0, 1, 2].map((h) => ({ timeMs: h * 3600000 }))
   assert.deepEqual(M.rulerTicks(frames, 1, "nb").map((t) => t.stamp), ["\u22121 t", "Nå", "+1 t"])
@@ -347,11 +346,26 @@ test("wind compass and arrow", () => {
 })
 
 test("precipitation formatting", () => {
-  assert.equal(M.formatPrecip(0, 0, 0, "sv"), "")
-  assert.equal(M.formatPrecip(0.04, 0.04, 0.04, "sv"), "<0,1 mm")
-  assert.equal(M.formatPrecip(0.4, 0.4, 0.4, "sv"), "0,4 mm")
-  assert.equal(M.formatPrecip(0.6, 0.2, 1.4, "sv"), "0,2–1,4 mm")
-  assert.equal(M.formatPrecip(0, 0, 0.3, "en"), "0–0.3 mm")
+  assert.equal(M.formatPrecip(0, 0, 0), "")
+  assert.equal(M.formatPrecip(0.04, 0.04, 0.04), "<1 mm")
+  assert.equal(M.formatPrecip(0.4, 0.4, 0.4), "<1 mm")
+  assert.equal(M.formatPrecip(2.6), "3 mm")
+  assert.equal(M.formatPrecip(0.6, 0.2, 1.4), "0–1 mm")
+  assert.equal(M.formatPrecip(0, 0, 0.3), "0–1 mm")  // a trace still reads as a range up to 1
+  assert.equal(M.formatPrecip(2.5, 0.8, 4.3), "1–4 mm")
+  assert.equal(M.formatPrecip(1, 0.6, 1.2), "1 mm")  // both ends round to 1
+})
+
+test("chance of precipitation in quarters", () => {
+  assert.equal(M.chanceQuarters(null), 0)
+  assert.equal(M.chanceQuarters(0), 0)
+  assert.equal(M.chanceQuarters(12), 0)
+  assert.equal(M.chanceQuarters(13), 1)
+  assert.equal(M.chanceQuarters(37), 1)
+  assert.equal(M.chanceQuarters(41), 2)
+  assert.equal(M.chanceQuarters(66), 3)
+  assert.equal(M.chanceQuarters(89), 4)
+  assert.equal(M.chanceQuarters(100), 4)
 })
 
 test("forecast parsing keeps periods", () => {

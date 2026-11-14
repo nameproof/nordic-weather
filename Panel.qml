@@ -1,5 +1,6 @@
 pragma ComponentBehavior: Bound
 import QtQuick
+import QtQuick.Shapes
 import Quickshell
 import qs.Commons
 import qs.Ui
@@ -303,12 +304,55 @@ Panel {
   readonly property int colTemp: Style.space(52)
   readonly property int colPop: Style.space(40)
   readonly property int colAmount: Style.space(92)
+  readonly property int pieSize: Style.space(12)
+  // Unlit part of the chance pie: the popup background moved a little
+  // towards the text colour.
+  readonly property color pieTrack: Qt.tint(mapLand, Qt.rgba(fg.r, fg.g, fg.b, 0.18))
   // Wind: speed | arrow | gust. Sized from the font so a two-digit gust
   // ends exactly at the row's right padding, mirroring the hour on the left.
   readonly property int windSpeedWidth: Style.space(18)
   readonly property int windArrowWidth: Style.space(12)
   readonly property int windGap: Style.space(4)
   readonly property int colWind: windSpeedWidth + windArrowWidth + Math.ceil(gustMetrics.advanceWidth) + windGap * 2
+
+  // Chance of precipitation in quarters (Model.chanceQuarters): a slice from
+  // twelve o'clock on a faint disc, dimmed at one quarter like low
+  // percentages elsewhere. Empty below a quarter.
+  component ChancePie: Item {
+    id: pie
+    required property int quarters
+    readonly property color lit: quarters === 1 ? root.dim : root.fg
+    width: root.pieSize
+    height: root.pieSize
+    visible: quarters > 0
+
+    Rectangle {
+      anchors.fill: parent
+      radius: width / 2
+      color: pie.quarters >= 4 ? pie.lit : root.pieTrack
+    }
+    Shape {
+      anchors.fill: parent
+      visible: pie.quarters < 4
+      preferredRendererType: Shape.CurveRenderer
+      ShapePath {
+        fillColor: pie.lit
+        strokeColor: "transparent"
+        startX: pie.width / 2
+        startY: pie.height / 2
+        PathAngleArc {
+          moveToStart: false
+          centerX: pie.width / 2
+          centerY: pie.height / 2
+          radiusX: pie.width / 2
+          radiusY: pie.height / 2
+          startAngle: -90
+          sweepAngle: 90 * pie.quarters
+        }
+        PathLine { x: pie.width / 2; y: pie.height / 2 }
+      }
+    }
+  }
 
   TextMetrics {
     id: gustMetrics
@@ -912,9 +956,10 @@ Panel {
                     font.family: root.fontFamily
                     font.pixelSize: Math.round(Style.font.body * glyphScale)
                   }
-                  // Over the last digit and the unit, like the drop over "0%".
+                  // The thermometer over the last digit and the unit, the
+                  // drop over the chance pie.
                   ColumnIcon { center: columnIcons.tempRight - columnIcons.charWidth; text: "\ue34e"; glyphScale: 11 / 14 }  // thermometer exterior
-                  ColumnIcon { center: columnIcons.popRight - columnIcons.charWidth; text: daySection.modelData.precipGlyph }  // rain, sleet or snow
+                  ColumnIcon { center: columnIcons.popRight - root.colPop / 2; text: daySection.modelData.precipGlyph }  // rain, sleet or snow
                   // Over the arrow, between speed and gust.
                   ColumnIcon {
                     center: columnIcons.windX + root.windSpeedWidth + root.windGap + root.windArrowWidth / 2
@@ -973,20 +1018,20 @@ Panel {
                     font.family: root.fontFamily
                     font.pixelSize: Style.font.body
                   }
-                  Text {
+                  Item {
                     width: root.colPop
+                    height: root.pieSize
                     anchors.verticalCenter: parent.verticalCenter
-                    horizontalAlignment: Text.AlignRight
-                    textFormat: Text.PlainText
-                    text: hourRow.modelData.precip.probability === null ? "" : hourRow.modelData.precip.probability + "%"
-                    color: hourRow.modelData.precip.probability >= 30 ? root.fg : root.faint
-                    font.family: root.fontFamily
-                    font.pixelSize: Style.font.body
+
+                    ChancePie {
+                      anchors.centerIn: parent
+                      quarters: hourRow.modelData.precip.quarters
+                    }
                   }
+                  // Left-aligned, next to the pie it belongs with.
                   Text {
                     width: root.colAmount
                     anchors.verticalCenter: parent.verticalCenter
-                    horizontalAlignment: Text.AlignRight
                     textFormat: Text.PlainText
                     text: hourRow.modelData.precip.text + (hourRow.modelData.precip.text !== "" && hourRow.modelData.periodHours === 6 ? "/6" + root.t.hour : "")
                     color: root.fg

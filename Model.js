@@ -677,17 +677,27 @@ function windArrow(deg) {
 
 // ---------------------------------------------------------------- precipitation
 
-function formatPrecip(amount, min, max, lang) {
+// Whole millimetres. A range rounds each end, with the upper end at least 1
+// ("0–1 mm" for a trace), and collapses to one number when both ends round
+// to the same value. A single amount under half a millimetre is "<1 mm".
+function formatPrecip(amount, min, max) {
   if (!isNum(amount) || amount <= 0) {
     if (isNum(max) && max > 0) amount = 0
     else return ""
   }
-  if (isNum(min) && isNum(max) && max - min >= 0.1 && max > 0) {
-    var lo = min < 0.1 ? "0" : formatNumber(min, 1, lang)
-    return lo + "–" + formatNumber(max, 1, lang) + " mm"
+  if (isNum(min) && isNum(max) && max > min) {
+    var lo = Math.max(0, Math.round(min))
+    var hi = Math.max(1, Math.round(max))
+    return (lo < hi ? lo + "–" + hi : hi) + " mm"
   }
-  if (amount < 0.1) return "<" + formatNumber(0.1, 1, lang) + " mm"
-  return formatNumber(amount, 1, lang) + " mm"
+  var mm = Math.round(amount)
+  return (mm < 1 ? "<1" : mm) + " mm"
+}
+
+// Chance of precipitation in quarters, 0–4, for the hourly pie: rounded to
+// the nearest quarter, so under 13 % shows nothing.
+function chanceQuarters(probability) {
+  return isNum(probability) ? Math.max(0, Math.min(4, Math.round(probability / 25))) : 0
 }
 
 // ---------------------------------------------------------------- parsing
@@ -1063,6 +1073,7 @@ function buildRow(step, lang, sixHour) {
   var d = step.instant
   var period = sixHour ? step.period6 : stepPeriod(step)
   var pd = period ? period.details : {}
+  var probability = isNum(pd.probability_of_precipitation) ? Math.round(pd.probability_of_precipitation) : null
   return {
     ms: step.ms,
     hour: pad2(localHour(step.ms)),
@@ -1071,8 +1082,9 @@ function buildRow(step, lang, sixHour) {
     description: describeSymbol(period ? period.symbol : "", lang),
     temp: roundTemp(d.air_temperature),
     precip: {
-      probability: isNum(pd.probability_of_precipitation) ? Math.round(pd.probability_of_precipitation) : null,
-      text: formatPrecip(pd.precipitation_amount, pd.precipitation_amount_min, pd.precipitation_amount_max, lang),
+      probability: probability,
+      quarters: chanceQuarters(probability),
+      text: formatPrecip(pd.precipitation_amount, pd.precipitation_amount_min, pd.precipitation_amount_max),
       kind: precipKind(period ? period.symbol : "")
     },
     wind: {
@@ -2152,6 +2164,7 @@ if (typeof module !== "undefined") {
     windCompass: windCompass,
     windArrow: windArrow,
     formatPrecip: formatPrecip,
+    chanceQuarters: chanceQuarters,
     parseTimeseries: parseTimeseries,
     parseSun: parseSun,
     parseMoon: parseMoon,
