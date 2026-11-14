@@ -1586,7 +1586,7 @@ Panel {
               visible: statusRow.width === 0 || x + width < statusRow.x - Style.space(8)
               textFormat: Text.PlainText
               text: modelData.stamp
-              color: modelData.forecast ? Color.accent : modelData.level === 1 ? root.dim : root.faint
+              color: modelData.level === 1 ? root.dim : root.faint
               font.family: root.fontFamily
               font.pixelSize: Style.font.caption
             }
