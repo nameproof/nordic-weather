@@ -91,6 +91,8 @@ var STRINGS = {
     radarFrom: "Radar från {time}",
     radarGaps: "Luckor i yr.no:s radar – tiden kan hoppa mellan bilder",
     forecastWord: "Prognos",
+    warnLevels: ["Gul varning", "Orange varning", "Röd varning"],
+    warnUntil: "till {time}",
     symbols: {
       clearsky: "Klart",
       fair: "Vackert",
@@ -148,6 +150,8 @@ var STRINGS = {
     radarFrom: "Radar fra {time}",
     radarGaps: "Hull i yr.no-radaren – tiden kan hoppe mellom bildene",
     forecastWord: "Prognose",
+    warnLevels: ["Gult farevarsel", "Oransje farevarsel", "Rødt farevarsel"],
+    warnUntil: "til {time}",
     symbols: {
       clearsky: "Klarvær",
       fair: "Lettskyet",
@@ -204,6 +208,8 @@ var STRINGS = {
     radarFrom: "Radar fra {time}",
     radarGaps: "Huller i yr.no's radar – tiden kan springe mellem billederne",
     forecastWord: "Prognose",
+    warnLevels: ["Gult varsel", "Orange varsel", "Rødt varsel"],
+    warnUntil: "til {time}",
     symbols: {
       clearsky: "Klart",
       fair: "Let skyet",
@@ -263,6 +269,8 @@ var STRINGS = {
     radarFrom: "Tutka klo {time}",
     radarGaps: "Aukkoja yr.no:n tutkassa – aika voi hypätä kuvien välillä",
     forecastWord: "Ennuste",
+    warnLevels: ["Keltainen varoitus", "Oranssi varoitus", "Punainen varoitus"],
+    warnUntil: "{time} asti",
     symbols: {
       clearsky: "Selkeää",
       fair: "Melko selkeää",
@@ -319,6 +327,8 @@ var STRINGS = {
     radarFrom: "Radar from {time}",
     radarGaps: "Gaps in yr.no's radar: expect time jumps between frames",
     forecastWord: "Forecast",
+    warnLevels: ["Yellow warning", "Orange warning", "Red warning"],
+    warnUntil: "until {time}",
     symbols: {
       clearsky: "Clear sky",
       fair: "Fair",
@@ -518,16 +528,20 @@ function cappedCurl(args) {
   return ["bash", "-c", script, "bash", String(MAX_RESPONSE_BYTES)].concat(args)
 }
 
-// Which service a request kind goes to: yr.no's radar and lightning, or
-// MET's API (forecast, nowcast, sun, moon). Throttling is per service.
+// Which service a request kind goes to: yr.no's radar and lightning, SMHI
+// and FMI warnings, or MET's API (forecast, nowcast, sun, moon, warnings).
+// Throttling is per service.
 function requestService(kind) {
-  return kind === "yrObs" || kind === "yrNow" || kind === "lightning" ? "yr" : "met"
+  return kind === "yrObs" || kind === "yrNow" || kind === "lightning" ? "yr"
+    : kind === "warnSmhi" ? "smhi" : kind === "warnFmiRss" || kind === "warnFmiAtom" ? "fmi" : "met"
 }
 
 // argv for one request. `-D -` puts the response headers ahead of the body
-// on stdout so Expires / Last-Modified reach parseHttpResponse.
-function curlCommand(url, lastModified, maxTime, agent) {
+// on stdout so Expires / Last-Modified / ETag reach parseHttpResponse. With
+// both validators the server goes by the ETag (RFC 9110).
+function curlCommand(url, lastModified, maxTime, agent, etag) {
   var args = ["-sS", "--compressed", "--max-time", String(maxTime || 10), "-A", agent, "-D", "-"]
+  if (etag) args.push("-H", "If-None-Match: " + etag)
   if (lastModified) args.push("-H", "If-Modified-Since: " + lastModified)
   args.push("--url", url)
   return cappedCurl(args)
@@ -1335,6 +1349,8 @@ function buildView(input) {
     longRangeScale: { min: 0, max: 1 },
     sun: buildSun(input.sun),
     moon: buildMoon(input.moon, nowMs, lang),
+    // Not tied to the forecast: shown as soon as the location is known.
+    warnings: buildWarnings(input.warnings, nowMs, lang),
     attribution: "\uf004 MET Norway"  // nf-fa-heart
   }
   var forecast = input.forecast
@@ -1360,6 +1376,445 @@ function buildView(input) {
   view.longRangeScale = longRangeScale(view.longRange)
   addListKeys(view)
   return view
+}
+
+// ---------------------------------------------------------------- weather warnings
+
+// Yellow, orange and red warnings for the location, from the national
+// service of the country it is in: SMHI (Sweden), MET Norway, FMI (Finland).
+// Fetched only while a panel is open (Service.qml); every check is
+// conditional, so an unchanged feed costs a 304.
+//   SMHI: all of Sweden as JSON with an outline per warning area. Its
+//         Last-Modified changes on every regeneration, so only the ETag
+//         gets a 304.
+//   MET:  the server matches the point; only nb ("no") and English exist.
+//   FMI:  the Atom feed carries every CAP message inline (≈400 KB gzipped)
+//         and is republished with all of them several times a day. The RSS
+//         index (≈1.5 KB) is checked first: when it lists only sea warnings
+//         or none, the Atom feed isn't needed.
+// Parsed warnings keep every language the provider has, so a language
+// change re-reads them without a request. Sea warnings are dropped when
+// parsing; SMHI's "Meddelande" level is never shown.
+var SMHI_WARNINGS_URL = "https://opendata-download-warnings.smhi.se/ibww/api/version/1/warning.json"
+var FMI_RSS_URL = "https://alerts.fmi.fi/cap/feed/rss_en-GB.rss"
+var FMI_ATOM_URL = "https://alerts.fmi.fi/cap/feed/atom_en-GB.xml"
+var WARNING_PROVIDERS = { SE: "smhi", NO: "met", FI: "fmi" }
+var WARNING_PROVIDER_NAMES = { smhi: "SMHI", met: "MET Norway", fmi: "FMI" }
+// SMHI events that only concern the sea (metadata/events.json). Anything
+// else, including codes added later, goes through point matching.
+var SMHI_SEA_EVENTS = ["WIND_SEA", "ICE_ACCRETION"]
+var WARNING_LEVELS = { yellow: 1, orange: 2, red: 3 }
+var MAX_WARNINGS = 64
+var MAX_WARNING_VERTICES = 400000
+var MAX_WARNING_TEXT_CHARS = 1500
+// Country outlines (map/countries.json, scripts/build-countries.py): a point
+// within errorKm + this of a shared border is in both countries, since the
+// source data itself is about that accurate.
+var COUNTRY_MARGIN_KM = 1
+// A point outside every outline (an outer island the source data lacks, a
+// fjord shore the simplified coast cuts off) goes to the nearest country
+// this close, and to any other within the margin of that distance; open sea
+// further out gets no warnings.
+var COUNTRY_SNAP_KM = 30
+
+function metAlertsUrl(location, lang) {
+  return MET_BASE + "/metalerts/2.0/current.json?" + coordQuery(location)
+    + "&lang=" + (lang === "nb" ? "no" : "en") + "&geographicDomain=land"
+}
+
+// [lon, lat, lon, lat, …] ring, closed or not.
+function inRing(ring, lon, lat) {
+  var inside = false
+  var n = ring.length
+  for (var i = 0, j = n - 2; i < n; j = i, i += 2) {
+    var xi = ring[i], yi = ring[i + 1], xj = ring[j], yj = ring[j + 1]
+    if ((yi > lat) !== (yj > lat) && lon < (xj - xi) * (lat - yi) / (yj - yi) + xi) inside = !inside
+  }
+  return inside
+}
+
+// polygons: [[outer ring, hole, …], …]
+function inPolygons(polygons, lon, lat) {
+  for (var p = 0; p < polygons.length; p++) {
+    var rings = polygons[p]
+    if (!rings.length || !inRing(rings[0], lon, lat)) continue
+    var hole = false
+    for (var h = 1; h < rings.length && !hole; h++) hole = inRing(rings[h], lon, lat)
+    if (!hole) return true
+  }
+  return false
+}
+
+// Shortest distance in km from the point to any ring edge.
+function distanceToPolygonsKm(polygons, lon, lat) {
+  var kx = 111.32 * Math.cos(lat * Math.PI / 180), ky = 111.32
+  var best = Infinity
+  for (var p = 0; p < polygons.length; p++) {
+    for (var r = 0; r < polygons[p].length; r++) {
+      var ring = polygons[p][r], n = ring.length
+      for (var i = 0, j = n - 2; i < n; j = i, i += 2) {
+        var ax = (ring[j] - lon) * kx, ay = (ring[j + 1] - lat) * ky
+        var bx = (ring[i] - lon) * kx, by = (ring[i + 1] - lat) * ky
+        var dx = bx - ax, dy = by - ay
+        var len = dx * dx + dy * dy
+        var t = len > 0 ? Math.max(0, Math.min(1, -(ax * dx + ay * dy) / len)) : 0
+        var ex = ax + t * dx, ey = ay + t * dy
+        var d = ex * ex + ey * ey
+        if (d < best) best = d
+      }
+    }
+  }
+  return Math.sqrt(best)
+}
+
+// Countries ("SE", "NO", "FI") whose provider to ask for the point: usually
+// one; two near a shared border; none out at sea or elsewhere in the world.
+function warningCountries(outlines, lat, lon) {
+  var countries = outlines && outlines.countries
+  if (!countries || !isNum(lat) || !isNum(lon)) return []
+  var margin = (isNum(outlines.errorKm) ? outlines.errorKm : 0) + COUNTRY_MARGIN_KM
+  var inside = [], dist = {}
+  // Every outline counts for where the point is (Denmark is there so its
+  // places aren't handed to Sweden); only those with a provider are asked.
+  var codes = Object.keys(countries)
+  for (var i = 0; i < codes.length; i++) {
+    var polys = countries[codes[i]]
+    if (!Array.isArray(polys)) continue
+    if (inPolygons(polys, lon, lat)) inside.push(codes[i])
+    else dist[codes[i]] = distanceToPolygonsKm(polys, lon, lat)
+  }
+  var out = inside.slice()
+  var nearest = Infinity
+  for (var c in dist) nearest = Math.min(nearest, dist[c])
+  var reach = inside.length ? margin : (nearest <= COUNTRY_SNAP_KM ? nearest + margin : -1)
+  for (var code in dist) if (dist[code] <= reach) out.push(code)
+  return Object.keys(WARNING_PROVIDERS).filter(function(c) { return out.indexOf(c) >= 0 })
+}
+
+function warningText(value) {
+  return boundedText(value, MAX_WARNING_TEXT_CHARS)
+}
+
+// { sv: "…", en: "…" } from a provider's multilingual object, known keys only.
+function warningTexts(obj, langs) {
+  var out = {}
+  if (!obj || typeof obj !== "object") return out
+  for (var i = 0; i < langs.length; i++) {
+    var text = warningText(obj[langs[i]])
+    if (text) out[langs[i]] = text
+  }
+  return out
+}
+
+// Picks a language from warningTexts, falling back to English, then any.
+function warningTextFor(texts, lang) {
+  if (!texts) return ""
+  if (texts[lang]) return texts[lang]
+  if (texts.en) return texts.en
+  for (var k in texts) return texts[k]
+  return ""
+}
+
+// GeoJSON Polygon / MultiPolygon / GeometryCollection → [[ring, hole…], …]
+// with flat rings; counts vertices into budget.left and gives up past it.
+function geoJsonPolygons(geometry, budget) {
+  var out = []
+  var addPolygon = function(rings) {
+    if (!Array.isArray(rings)) return
+    var poly = []
+    for (var r = 0; r < rings.length; r++) {
+      var ring = rings[r]
+      if (!Array.isArray(ring) || ring.length < 4 || (budget.left -= ring.length) < 0) return
+      var flatRing = []
+      for (var k = 0; k < ring.length; k++) {
+        var pt = ring[k]
+        if (!Array.isArray(pt) || !isNum(pt[0]) || !isNum(pt[1])) return
+        flatRing.push(Math.round(pt[0] * 1e5) / 1e5, Math.round(pt[1] * 1e5) / 1e5)
+      }
+      poly.push(flatRing)
+    }
+    if (poly.length) out.push(poly)
+  }
+  var walk = function(g, depth) {
+    if (!g || typeof g !== "object" || depth > 3) return
+    if (g.type === "Feature") walk(g.geometry, depth + 1)
+    else if (g.type === "Polygon") addPolygon(g.coordinates)
+    else if (g.type === "MultiPolygon" && Array.isArray(g.coordinates)) g.coordinates.forEach(addPolygon)
+    else if (g.type === "GeometryCollection" && Array.isArray(g.geometries))
+      g.geometries.forEach(function(s) { walk(s, depth + 1) })
+  }
+  walk(geometry, 0)
+  return out
+}
+
+// A parsed warning, whatever the provider:
+//   { id, level 1–3, title, advice: { lang: text }, startMs, endMs (null
+//     when open-ended), areas: [{ name: { lang: text }, polygons }] }
+// MET's warnings come already matched to the point and have areas: [].
+// A parsed source: { warnings: […] }, or null when the body is unreadable.
+
+function parseSmhiWarnings(text) {
+  var data = parseJson(text)
+  if (!Array.isArray(data)) return null
+  var langs = ["sv", "en"]
+  var budget = { left: MAX_WARNING_VERTICES }
+  var warnings = []
+  for (var i = 0; i < data.length && warnings.length < MAX_WARNINGS; i++) {
+    var w = data[i]
+    if (!w || !w.event || SMHI_SEA_EVENTS.indexOf(w.event.code) >= 0 || !Array.isArray(w.warningAreas)) continue
+    for (var a = 0; a < w.warningAreas.length && warnings.length < MAX_WARNINGS; a++) {
+      var area = w.warningAreas[a]
+      var level = area && area.warningLevel ? WARNING_LEVELS[String(area.warningLevel.code).toLowerCase()] : 0
+      if (!level) continue
+      var polygons = geoJsonPolygons(area.area, budget)
+      if (!polygons.length) continue
+      var advice = {}
+      var descriptions = Array.isArray(area.descriptions) ? area.descriptions : []
+      for (var d = 0; d < descriptions.length; d++) {
+        var desc = descriptions[d]
+        if (desc && desc.title && desc.title.code === "AFFECT") advice = warningTexts(desc.text, langs)
+      }
+      var endMs = parseIsoMs(area.approximateEnd)
+      // One SMHI warning holds several areas, nested or one after the other
+      // (an orange core inside a yellow area, a later phase): each is a row.
+      warnings.push({
+        id: "smhi:" + w.id + ":" + area.id,
+        level: level,
+        title: warningTexts(area.eventDescription, langs),
+        advice: advice,
+        startMs: parseIsoMs(area.approximateStart),
+        endMs: isNum(endMs) ? endMs : null,
+        areas: [{ name: warningTexts(area.areaName, langs), polygons: polygons }]
+      })
+    }
+  }
+  return { warnings: warnings }
+}
+
+function metLevel(props) {
+  var color = String(props.riskMatrixColor || String(props.awareness_level || "").split(";")[1] || "").trim().toLowerCase()
+  return WARNING_LEVELS[color] || 0
+}
+
+// The body is in one language, the one asked for in the URL.
+function parseMetAlerts(text, lang) {
+  var data = parseJson(text)
+  if (!data || !Array.isArray(data.features)) return null
+  var key = lang === "nb" ? "nb" : "en"
+  var warnings = []
+  for (var i = 0; i < data.features.length && warnings.length < MAX_WARNINGS; i++) {
+    var f = data.features[i]
+    var p = f && f.properties
+    if (!p || p.geographicDomain === "marine") continue
+    var level = metLevel(p)
+    if (!level) continue
+    var interval = f.when && Array.isArray(f.when.interval) ? f.when.interval : []
+    var endMs = parseIsoMs(p.eventEndingTime || interval[1])
+    var titles = {}, advice = {}, names = {}
+    titles[key] = warningText([p.eventAwarenessName, p.description].filter(Boolean).join(": "))
+    advice[key] = warningText([p.consequences, p.instruction].filter(Boolean).join(" "))
+    names[key] = warningText(p.area)
+    warnings.push({
+      id: "met:" + warningText(p.id),
+      level: level,
+      title: titles,
+      advice: advice,
+      startMs: parseIsoMs(interval[0]),
+      endMs: isNum(endMs) ? endMs : null,
+      areas: [{ name: names, polygons: [] }]
+    })
+  }
+  return { warnings: warnings }
+}
+
+function xmlText(value) {
+  return String(value || "")
+    .replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, "$1")
+    .replace(/&#x([0-9a-fA-F]+);/g, function(_, h) { return String.fromCharCode(parseInt(h, 16)) })
+    .replace(/&#(\d+);/g, function(_, d) { return String.fromCharCode(parseInt(d, 10)) })
+    .replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, "\"").replace(/&apos;/g, "'")
+    .replace(/&amp;/g, "&")
+}
+
+// Every <tag>…</tag> in xml (any prefix, attributes allowed), as inner text.
+function xmlAll(xml, tag) {
+  var re = new RegExp("<(?:\\w+:)?" + tag + "(?:\\s[^>]*)?>([\\s\\S]*?)</(?:\\w+:)?" + tag + ">", "g")
+  var out = [], m
+  while ((m = re.exec(xml)) !== null) out.push(m[1])
+  return out
+}
+
+function xmlFirst(xml, tag) {
+  var all = xmlAll(xml, tag)
+  return all.length ? all[0] : ""
+}
+
+// FMI's RSS index: { ids: [CAP identifier], needsAtom }. needsAtom is false
+// only when there are no items or every title is one of the sea-warning
+// titles seen in the feed; anything unexpected fetches the Atom feed.
+var FMI_SEA_TITLE = /^(Yellow|Orange|Red) [a-z ]+ warning for sea area: /
+function parseFmiRss(text) {
+  var xml = String(text || "")
+  if (!/<rss[\s>]/.test(xml)) return null
+  var items = xmlAll(xml, "item")
+  var ids = [], needsAtom = false
+  for (var i = 0; i < items.length; i++) {
+    ids.push(xmlText(xmlFirst(items[i], "guid")).trim())
+    if (!FMI_SEA_TITLE.test(xmlText(xmlFirst(items[i], "title")).trim())) needsAtom = true
+  }
+  return { ids: ids, needsAtom: needsAtom }
+}
+
+var FMI_LANGS = { "fi-FI": "fi", "sv-FI": "sv", "en-GB": "en" }
+
+// CAP polygon "lat,lon lat,lon …" → flat [lon, lat, …] ring, or null.
+function capRing(text, budget) {
+  var pairs = String(text).trim().split(/\s+/)
+  if (pairs.length < 4 || (budget.left -= pairs.length) < 0) return null
+  var ring = []
+  for (var i = 0; i < pairs.length; i++) {
+    var ll = pairs[i].split(",")
+    var lat = parseFloat(ll[0]), lon = parseFloat(ll[1])
+    if (!isNum(lat) || !isNum(lon)) return null
+    ring.push(Math.round(lon * 1e4) / 1e4, Math.round(lat * 1e4) / 1e4)
+  }
+  return ring
+}
+
+// FMI's Atom feed → { ids, warnings }. Each entry is a CAP alert with one
+// <info> per language; land areas only (sea areas carry a METAREA geocode).
+function parseFmiAtom(text) {
+  var xml = String(text || "")
+  if (!/<feed[\s>]/.test(xml)) return null
+  var budget = { left: MAX_WARNING_VERTICES }
+  var ids = [], warnings = []
+  var entries = xmlAll(xml, "entry")
+  for (var e = 0; e < entries.length; e++) {
+    var alert = xmlFirst(entries[e], "alert")
+    var id = xmlText(xmlFirst(alert, "identifier")).trim()
+    ids.push(id)
+    if (warnings.length >= MAX_WARNINGS || xmlText(xmlFirst(alert, "status")).trim() !== "Actual"
+        || xmlText(xmlFirst(alert, "msgType")).trim() === "Cancel") continue
+    var infos = xmlAll(alert, "info")
+    var title = {}, advice = {}, names = [], level = 0, startMs = NaN, endMs = NaN, areaPolys = null
+    for (var i = 0; i < infos.length; i++) {
+      var lang = FMI_LANGS[xmlText(xmlFirst(infos[i], "language")).trim()]
+      if (!lang) continue
+      var params = xmlAll(infos[i], "parameter")
+      var impacts = ""
+      for (var p = 0; p < params.length; p++) {
+        var name = xmlText(xmlFirst(params[p], "valueName")).trim()
+        var value = xmlText(xmlFirst(params[p], "value")).trim()
+        if (name === "color") level = WARNING_LEVELS[value.toLowerCase()] || level
+        else if (name === "typicalImpacts") impacts = value
+      }
+      title[lang] = warningText(xmlText(xmlFirst(infos[i], "description")))
+      advice[lang] = warningText(impacts)
+      if (!isNum(startMs)) startMs = parseIsoMs(xmlText(xmlFirst(infos[i], "onset")).trim())
+      if (!isNum(endMs)) endMs = parseIsoMs(xmlText(xmlFirst(infos[i], "expires")).trim())
+      var areas = xmlAll(infos[i], "area")
+      var collect = areaPolys === null
+      if (collect) areaPolys = []
+      for (var a = 0; a < areas.length; a++) {
+        var land = !/<(?:\w+:)?valueName>\s*METAREA\s*</.test(areas[a])
+        if (!names[a]) names[a] = {}
+        names[a][lang] = warningText(xmlText(xmlFirst(areas[a], "areaDesc")))
+        if (!collect) continue
+        var rings = []
+        if (land) {
+          var polys = xmlAll(areas[a], "polygon")
+          for (var r = 0; r < polys.length; r++) {
+            var ring = capRing(xmlText(polys[r]), budget)
+            if (ring) rings.push([ring])
+          }
+        }
+        areaPolys.push(rings)
+      }
+    }
+    if (!level || !areaPolys) continue
+    var kept = []
+    for (var k = 0; k < areaPolys.length; k++)
+      if (areaPolys[k].length) kept.push({ name: names[k] || {}, polygons: areaPolys[k] })
+    if (!kept.length) continue
+    warnings.push({ id: "fmi:" + id, level: level, title: title, advice: advice,
+                    startMs: startMs, endMs: isNum(endMs) ? endMs : null, areas: kept })
+  }
+  return { ids: ids, warnings: warnings }
+}
+
+// warnings.json in the cache folder: the parsed sources with the validators
+// for their next check, written only when a source changes.
+//   { version, sources: { smhi|met|fmi: { key, etag, lastModified, warnings, ids? } } }
+var WARNING_STORE_VERSION = 1
+
+function warningStoreText(sources) {
+  return JSON.stringify({ version: WARNING_STORE_VERSION, sources: sources }) + "\n"
+}
+
+// → the sources, or {} when the file is missing, from another version or
+// not what it should be.
+function parseWarningStore(text) {
+  var data = parseJson(text)
+  var out = {}
+  if (!data || data.version !== WARNING_STORE_VERSION || !data.sources || typeof data.sources !== "object") return out
+  for (var provider in WARNING_PROVIDER_NAMES) {
+    var src = data.sources[provider]
+    if (src && typeof src.key === "string" && Array.isArray(src.warnings)) out[provider] = src
+  }
+  return out
+}
+
+// "18", "18:30", or with the weekday when it isn't today ("sön 06").
+function warningClock(ms, nowMs, lang) {
+  var d = new Date(ms)
+  var clock = d.getMinutes() ? pad2(d.getHours()) + ":" + pad2(d.getMinutes()) : pad2(d.getHours())
+  if (localDayStart(ms) === localDayStart(nowMs)) return clock
+  var day = strings(lang).weekdaysShort[d.getDay()]
+  // Weekdays are lower case mid-sentence in every language but English.
+  return (lang === "en" ? day : day.toLowerCase()) + " " + clock
+}
+
+// The band's rows: warnings covering the point that haven't ended, worst
+// first, then soonest. sources: { smhi, met, fmi } parsed sources (met only
+// when it is for this point); providers: which of them apply here.
+//   → [{ id, level, label, title, when, advice, area, provider, key }]
+// (key: content key for the panel's list, as addListKeys)
+function buildWarnings(input, nowMs, lang) {
+  if (!input || !input.sources || !Array.isArray(input.providers)) return []
+  var lat = Number(input.latitude), lon = Number(input.longitude)
+  var s = strings(lang)
+  var rows = []
+  for (var p = 0; p < input.providers.length; p++) {
+    var provider = input.providers[p]
+    var source = input.sources[provider]
+    var list = source && Array.isArray(source.warnings) ? source.warnings : []
+    for (var i = 0; i < list.length; i++) {
+      var w = list[i]
+      if (isNum(w.endMs) && w.endMs <= nowMs) continue
+      var area = null
+      for (var a = 0; a < w.areas.length && !area; a++)
+        if (provider === "met" || inPolygons(w.areas[a].polygons, lon, lat)) area = w.areas[a]
+      if (!area || rows.some(function(r) { return r.id === w.id })) continue
+      var started = !isNum(w.startMs) || w.startMs <= nowMs
+      var when = !isNum(w.endMs) ? (started ? "" : warningClock(w.startMs, nowMs, lang))
+        : started ? fill(s.warnUntil, { time: warningClock(w.endMs, nowMs, lang) })
+        : warningClock(w.startMs, nowMs, lang) + " – " + warningClock(w.endMs, nowMs, lang)
+      rows.push({
+        id: w.id,
+        level: w.level,
+        label: s.warnLevels[w.level - 1],
+        title: warningTextFor(w.title, lang),
+        when: when,
+        advice: warningTextFor(w.advice, lang),
+        area: warningTextFor(area.name, lang),
+        provider: WARNING_PROVIDER_NAMES[provider],
+        startMs: isNum(w.startMs) ? w.startMs : 0
+      })
+    }
+  }
+  rows.sort(function(x, y) { return y.level - x.level || x.startMs - y.startMs })
+  for (var k = 0; k < rows.length; k++) rows[k].key = contentKey(rows[k])
+  return rows
 }
 
 // ---------------------------------------------------------------- radar map
@@ -2115,6 +2570,20 @@ if (typeof module !== "undefined") {
     cacheSetupCommand: cacheSetupCommand,
     tileDownloadCommand: tileDownloadCommand,
     NOWCAST_BACKGROUND_MS: NOWCAST_BACKGROUND_MS,
+    SMHI_WARNINGS_URL: SMHI_WARNINGS_URL,
+    FMI_RSS_URL: FMI_RSS_URL,
+    FMI_ATOM_URL: FMI_ATOM_URL,
+    WARNING_PROVIDERS: WARNING_PROVIDERS,
+    metAlertsUrl: metAlertsUrl,
+    inPolygons: inPolygons,
+    warningCountries: warningCountries,
+    parseSmhiWarnings: parseSmhiWarnings,
+    parseMetAlerts: parseMetAlerts,
+    parseFmiRss: parseFmiRss,
+    parseFmiAtom: parseFmiAtom,
+    buildWarnings: buildWarnings,
+    warningStoreText: warningStoreText,
+    parseWarningStore: parseWarningStore,
     userAgent: userAgent,
     STRINGS: STRINGS,
     langFor: langFor,

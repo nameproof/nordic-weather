@@ -90,7 +90,10 @@ Panel {
   // Every open starts compact: the radar only loads when asked for.
   property bool radarOpen: false
   onOpenedChanged: {
-    if (!opened) radarOpen = false
+    if (!opened) {
+      radarOpen = false
+      warnUnfolded = ({})
+    }
     reportViewer()
   }
   onRadarOpenChanged: reportViewer()
@@ -351,6 +354,153 @@ Panel {
         }
         PathLine { x: pie.width / 2; y: pie.height / 2 }
       }
+    }
+  }
+
+  // Weather warnings (Model.buildWarnings): a tinted row each, above the
+  // radar line, worst first. Two rows at most; the second says how many
+  // more there are. A click unfolds the provider's advice. Warning colours
+  // are fixed, not from the theme, so a red warning reads as red anywhere;
+  // darker shades on light themes.
+  readonly property var warnColors: mapDarkness >= 0.5 ? ["#f5cf3b", "#ff8c2e", "#ff4d4d"] : ["#9a7800", "#c25700", "#c8102e"]
+  // Unfolded rows by warning id; kept here so a row rebuilt by the list
+  // (its text changes as time passes) stays unfolded. Cleared on close.
+  property var warnUnfolded: ({})
+  readonly property var warnRows: (root.view.warnings || []).slice(0, 2)
+
+  function toggleWarning(id) {
+    var next = Object.assign({}, warnUnfolded)
+    if (next[id]) delete next[id]
+    else next[id] = true
+    warnUnfolded = next
+  }
+
+  component WarningBand: Rectangle {
+    id: band
+    required property var modelData
+    required property int index
+    readonly property color tone: root.warnColors[modelData.level - 1]
+    readonly property bool unfolded: !!root.warnUnfolded[modelData.id]
+    readonly property int more: index === 1 ? (root.view.warnings || []).length - 2 : 0
+    readonly property int textLeft: Style.space(12) + triangle.implicitWidth + Style.space(8)
+    width: parent ? parent.width : 0
+    height: bandLine.height + (unfolded ? details.implicitHeight + Style.space(10) : 0)
+    radius: Style.cornerRadius
+    color: Qt.tint(root.mapLand, Qt.rgba(tone.r, tone.g, tone.b, 0.13))
+
+    Item {
+      id: bandLine
+      width: parent.width
+      height: Style.space(28)
+
+      Text {
+        id: triangle
+        anchors.left: parent.left
+        anchors.leftMargin: Style.space(12)
+        anchors.verticalCenter: parent.verticalCenter
+        textFormat: Text.PlainText
+        text: "\udb80\udc26"  // nf-md-alert
+        color: band.tone
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.body
+      }
+      Text {
+        id: levelText
+        anchors.left: parent.left
+        anchors.leftMargin: band.textLeft
+        anchors.verticalCenter: parent.verticalCenter
+        textFormat: Text.PlainText
+        text: band.modelData.label
+        color: band.tone
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.body
+        font.bold: true
+      }
+      Text {
+        id: titleText
+        anchors.left: levelText.right
+        anchors.leftMargin: Style.space(10)
+        anchors.right: whenText.left
+        anchors.rightMargin: Style.space(10)
+        anchors.verticalCenter: parent.verticalCenter
+        textFormat: Text.PlainText
+        text: band.modelData.title
+        elide: Text.ElideRight
+        color: root.fg
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.body
+      }
+      Text {
+        id: whenText
+        anchors.right: chevron.left
+        anchors.rightMargin: Style.space(10)
+        anchors.verticalCenter: parent.verticalCenter
+        textFormat: Text.PlainText
+        text: band.modelData.when + (band.more > 0 ? "  +" + band.more : "")
+        color: root.dim
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.bodySmall
+      }
+      Text {
+        id: chevron
+        anchors.right: parent.right
+        anchors.rightMargin: Style.space(12)
+        anchors.verticalCenter: parent.verticalCenter
+        textFormat: Text.PlainText
+        text: "›"
+        rotation: band.unfolded ? 90 : 0
+        color: root.dim
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.body
+      }
+    }
+
+    Column {
+      id: details
+      visible: band.unfolded
+      anchors.top: bandLine.bottom
+      anchors.left: parent.left
+      anchors.leftMargin: band.textLeft
+      anchors.right: parent.right
+      anchors.rightMargin: Style.space(12)
+      spacing: Style.space(6)
+
+      Text {
+        width: parent.width
+        visible: titleText.truncated
+        textFormat: Text.PlainText
+        text: band.modelData.title
+        wrapMode: Text.Wrap
+        color: root.fg
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.bodySmall
+      }
+      Text {
+        width: parent.width
+        visible: band.modelData.advice !== ""
+        textFormat: Text.PlainText
+        text: band.modelData.advice
+        wrapMode: Text.Wrap
+        lineHeight: 1.15
+        color: root.fg
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.bodySmall
+      }
+      Text {
+        width: parent.width
+        textFormat: Text.PlainText
+        text: [band.modelData.area, band.modelData.provider].filter(function(t) { return t !== "" }).join(" · ")
+        wrapMode: Text.Wrap
+        color: root.faint
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.bodySmall
+      }
+    }
+
+    MouseArea {
+      anchors.fill: parent
+      cursorShape: Qt.PointingHandCursor
+      onClicked: root.toggleWarning(band.modelData.id)
     }
   }
 
@@ -815,6 +965,18 @@ Panel {
             font.family: root.fontFamily
             font.pixelSize: Style.font.bodySmall
             font.italic: true
+          }
+
+          // ---- Weather warnings for the location, while there are any.
+          Column {
+            visible: root.hasLocation && root.warnRows.length > 0
+            width: parent.width
+            spacing: Style.space(4)
+
+            Repeater {
+              model: ScriptModel { values: root.warnRows; objectProp: "key" }
+              WarningBand {}
+            }
           }
 
           // ---- Radar nowcast: one sentence + 2-hour precipitation sparkline.

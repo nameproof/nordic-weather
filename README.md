@@ -15,6 +15,9 @@ can be used for other locations but the radar map and cloud data is
 limited to this region. Locations works the same way the built-in Omarchy
 weather widget does, just with added favorites.
 
+Shows weather warnings for your location in Sweden
+(SMHI), Norway (MET Norway) and Finland (FMI).
+
 Follows Omarchy's theming colors, including the Radar!
 
 Languages: Swedish, Norwegian, Danish, Finnish or English, following the
@@ -50,6 +53,7 @@ Just click around, some advanced motions do exist however:
 | Middle click, or `r` in the panel | Refresh now |
 | Click the place name, or Enter in the panel | Search for a location, or pick a favourite |
 | Click the ☆ / ★ on a search result | Add or remove that place as a favourite |
+| Click a warning | Show the advice that comes with it |
 | Click **Radar ›**, or → / `l` in the panel (← / `h` closes) | Show the radar map beside the forecast |
 | `+` / `−` or the mouse wheel on the map | Zoom the radar map |
 | Click the map, or `p` | Pause or play the radar loop |

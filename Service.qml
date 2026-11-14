@@ -98,6 +98,7 @@ Scope {
   }
 
   onAnyOpenChanged: if (anyOpen) {
+    openedMs = Date.now()
     locationFile.reload()
     rebuild()
     Qt.callLater(maybeFetch, false)
@@ -124,7 +125,7 @@ Scope {
   readonly property int refreshJitterMs: Model.jitterMs()
   // After a 429, requests to that service ("met" or "yr", Model.requestService)
   // pause until this time.
-  property var backoffUntil: ({ met: 0, yr: 0 })
+  property var backoffUntil: ({ met: 0, yr: 0, smhi: 0, fmi: 0 })
   property var failures: ({})
 
   // Parsed bodies, reused until the cached body changes.
@@ -199,8 +200,12 @@ Scope {
     var now = Date.now()
     var forecast = urls ? parsedFor("forecast", urls.forecast) : null
     // While a new place's forecast loads, keep showing the previous view
-    // (the search field stays open with a spinner) rather than flashing empty.
-    if (urls && !forecast && forecastProc.running && view.ready) return
+    // (the search field stays open with a spinner) rather than flashing empty;
+    // only the warnings follow the new place at once.
+    if (urls && !forecast && forecastProc.running && view.ready) {
+      view = Object.assign({}, view, { warnings: Model.buildWarnings(warningInput(), now, lang) })
+      return
+    }
 
     view = Model.buildView({
       forecast: forecast,
@@ -208,6 +213,7 @@ Scope {
       sun: urls ? parsedFor("sun", urls.sun) : null,
       moon: urls ? parsedFor("moon", urls.moon) : null,
       location: location,
+      warnings: warningInput(),
       lang: lang,
       nowMs: now,
       settings: { hourStep: hourStep, hourlyDays: hourlyDays, longRangeDays: longRangeDays }
@@ -248,6 +254,7 @@ Scope {
   // force: middle click / IPC refresh. Skips the Expires wait, but still
   // sends If-Modified-Since, so an unchanged forecast costs a 304.
   function maybeFetch(force) {
+    maybeFetchWarnings(force)
     if (!Model.hasCoordinates(location) || !cacheLoaded || offline) return
     var now = Date.now()
     var urls = requestUrls()
@@ -292,6 +299,7 @@ Scope {
   }
 
   function handleResponse(kind, url, raw) {
+    if (kind.indexOf("warn") === 0) return handleWarningResponse(kind, url, raw)
     var now = Date.now()
     var response = Model.parseHttpResponse(raw)
     var urls = requestUrls()
@@ -374,6 +382,254 @@ Scope {
   function writeCache() {
     if (!cacheLoaded || !cacheReady) return
     cacheFile.setText(JSON.stringify(cache) + "\n")
+  }
+
+
+  // ---------------------------------------------------------------- warnings
+
+  // Yellow/orange/red weather warnings for the location (Model.js, "weather
+  // warnings"). Only the panel shows them, so they are checked only while
+  // one is open: on opening when the last check is 10+ min old, then every
+  // 15 min while it stays open; nothing in the background or at startup.
+  // Each check is conditional (ETag / Last-Modified), so an unchanged feed
+  // costs a 304. The parsed sources and their validators live in
+  // warnings.json, written only when a source changes; when each was last
+  // checked is kept in memory, so the first opening after a restart checks.
+
+  // Country outlines for picking the provider (map/countries.json, static).
+  property var countryOutlines: null
+  FileView {
+    path: decodeURIComponent(String(Qt.resolvedUrl("map/countries.json")).replace(/^file:\/\//, ""))
+    printErrors: false
+    onLoaded: {
+      try { root.countryOutlines = JSON.parse(text()) } catch (e) { root.countryOutlines = null }
+      root.rebuild()
+      Qt.callLater(root.maybeFetch, false)
+    }
+  }
+
+  // { smhi|met|fmi: { key, etag, lastModified, warnings, ids? } } (Model.parseWarningStore)
+  property var warnStore: ({})
+  property bool warnStoreLoaded: false
+  // By request kind: { key, ms, expiresMs } of the last answered check.
+  property var warnChecked: ({})
+  property double openedMs: 0
+  // FMI's RSS answer while its Atom feed is fetched: { key, etag, lastModified, ids }.
+  property var fmiPending: null
+  property var warnRouteMemo: ({ key: "", providers: [] })
+
+  // Providers ("smhi", "met", "fmi") for the location: usually one.
+  function warningProviders() {
+    if (!countryOutlines || !Model.hasCoordinates(location)) return []
+    var key = Model.roundCoord(location.latitude) + "," + Model.roundCoord(location.longitude)
+    if (warnRouteMemo.key !== key) {
+      var countries = Model.warningCountries(countryOutlines, Number(location.latitude), Number(location.longitude))
+      warnRouteMemo = { key: key, providers: countries.map(function(c) { return Model.WARNING_PROVIDERS[c] }) }
+    }
+    return warnRouteMemo.providers
+  }
+
+  function metWarningsUrl() {
+    return Model.metAlertsUrl(locationForRequests(), lang)
+  }
+
+  // For Model.buildWarnings; MET's answer only when it is for this point and language.
+  function warningInput() {
+    if (!Model.hasCoordinates(location)) return null
+    var providers = warningProviders()
+    var sources = {}
+    for (var i = 0; i < providers.length; i++) {
+      var stored = warnStore[providers[i]]
+      if (stored && (providers[i] !== "met" || stored.key === metWarningsUrl())) sources[providers[i]] = stored
+    }
+    return { sources: sources, providers: providers, latitude: location.latitude, longitude: location.longitude }
+  }
+
+  function warnDue(kind, url, now, force) {
+    var failure = failures[kind]
+    if (failure && failure.key === url && now < failure.nextMs) return false
+    var checked = warnChecked[kind]
+    if (force || !checked || checked.key !== url) return true
+    var gap = now - openedMs < 2 * 60000 ? 10 * 60000 : 15 * 60000
+    return now >= Math.max(checked.expiresMs, checked.ms + gap)
+  }
+
+  function maybeFetchWarnings(force) {
+    if (!anyOpen || !warnStoreLoaded || offline || !Model.hasCoordinates(location)) return
+    var now = Date.now()
+    var providers = warningProviders()
+    if (providers.indexOf("smhi") >= 0 && now >= backoffUntil.smhi)
+      startWarnFetch(warnSmhiProc, "warnSmhi", Model.SMHI_WARNINGS_URL, warnDue("warnSmhi", Model.SMHI_WARNINGS_URL, now, force))
+    if (providers.indexOf("met") >= 0 && now >= backoffUntil.met) {
+      var metUrl = metWarningsUrl()
+      startWarnFetch(warnMetProc, "warnMet", metUrl, warnDue("warnMet", metUrl, now, force))
+    }
+    if (providers.indexOf("fmi") >= 0 && now >= backoffUntil.fmi && !fmiPending && !warnFmiAtomProc.running)
+      startWarnFetch(warnFmiRssProc, "warnFmiRss", Model.FMI_RSS_URL, warnDue("warnFmiRss", Model.FMI_RSS_URL, now, force))
+  }
+
+  function warnProvider(kind) {
+    return kind === "warnSmhi" ? "smhi" : kind === "warnMet" ? "met" : "fmi"
+  }
+
+  // Validators only for the request the stored source came from; the Atom
+  // feed goes unconditionally (it is only asked for when the RSS changed).
+  function startWarnFetch(proc, kind, url, due) {
+    if (!due || proc.running) return
+    var stored = warnStore[warnProvider(kind)]
+    var same = kind !== "warnFmiAtom" && stored && stored.key === url
+    proc.url = url
+    proc.command = Model.curlCommand(url, same ? stored.lastModified : "", kind === "warnFmiAtom" ? 30 : 10,
+                                     userAgent, same ? stored.etag : "")
+    proc.running = true
+  }
+
+  function markWarnChecked(kind, url, now, response) {
+    var next = Object.assign({}, warnChecked)
+    var expires = Model.parseHttpDateMs(response.headers.expires)
+    next[kind] = { key: url, ms: now, expiresMs: isNaN(expires) ? 0 : expires }
+    warnChecked = next
+    var cleared = Object.assign({}, failures)
+    delete cleared[kind]
+    failures = cleared
+  }
+
+  // An RSS answer that wasn't followed through: the next chance asks again
+  // (after the failure back-off, if one was recorded) rather than waiting
+  // out the gap after the previous successful check.
+  function forgetWarnCheck(kind) {
+    if (!warnChecked[kind]) return
+    var next = Object.assign({}, warnChecked)
+    delete next[kind]
+    warnChecked = next
+  }
+
+  // The ETag when there is one, else Last-Modified, verbatim. SMHI's
+  // Last-Modified moves on every regeneration, so keeping it next to an
+  // ETag would only cause needless writes.
+  function warnValidators(response) {
+    var etag = response.headers.etag || ""
+    return { etag: etag, lastModified: etag ? "" : (response.headers["last-modified"] || "") }
+  }
+
+  // The file is rewritten only when the warnings change. New validators
+  // alone (MET answers 200 whenever its Last-Modified moved) are kept in
+  // memory for the next check; after a restart the stored ones cost at
+  // most one full answer.
+  function setWarnSource(provider, entry) {
+    var old = warnStore[provider]
+    if (JSON.stringify(old) === JSON.stringify(entry)) return
+    var next = Object.assign({}, warnStore)
+    next[provider] = entry
+    warnStore = next
+    var sameContent = !!old && old.key === entry.key && JSON.stringify(old.warnings) === JSON.stringify(entry.warnings)
+      && JSON.stringify(old.ids) === JSON.stringify(entry.ids)
+    if (!sameContent) writeWarnStore()
+  }
+
+  function writeWarnStore() {
+    if (cacheReady) warnFile.setText(Model.warningStoreText(warnStore))
+  }
+
+  function handleWarningResponse(kind, url, raw) {
+    var now = Date.now()
+    var response = Model.parseHttpResponse(raw)
+    var provider = warnProvider(kind)
+    console.log("nordic-weather: " + kind + " HTTP " + (response.status || "failed"))
+    if (response.status === 304 && kind !== "warnFmiAtom") {
+      var stored = warnStore[provider]
+      var v = warnValidators(response)
+      if (stored && stored.key === url && v.etag && v.etag !== stored.etag)
+        setWarnSource(provider, Object.assign({}, stored, v))
+      markWarnChecked(kind, url, now, response)
+    } else if (response.status === 200) {
+      handleWarningBody(kind, url, now, response)
+    } else if (kind === "warnFmiAtom") {
+      // The RSS check that asked for it counts as failed too, so the pair
+      // backs off together instead of re-asking every minute.
+      if (fmiPending) recordFailure("warnFmiRss", fmiPending.key, "Atom feed: HTTP " + (response.status || "failed"))
+      forgetWarnCheck("warnFmiRss")
+      fmiPending = null
+      if (response.status === 429) backoffUntil = Object.assign({}, backoffUntil, { fmi: now + 10 * 60000 })
+    } else if (response.status === 429) {
+      var service = Model.requestService(kind)
+      console.warn("nordic-weather: throttled by " + service + " (429), pausing its requests for 10 min")
+      var nextBackoff = Object.assign({}, backoffUntil)
+      nextBackoff[service] = now + 10 * 60000
+      backoffUntil = nextBackoff
+      recordFailure(kind, url, "HTTP 429")
+    } else {
+      recordFailure(kind, url, response.status ? "HTTP " + response.status : "network error")
+    }
+    rebuild()
+    // The location may have moved on while this request was out.
+    Qt.callLater(maybeFetch, false)
+  }
+
+  // An unreadable body never replaces what is stored.
+  function handleWarningBody(kind, url, now, response) {
+    var v = warnValidators(response)
+    if (kind === "warnSmhi" || kind === "warnMet") {
+      var parsed = kind === "warnSmhi" ? Model.parseSmhiWarnings(response.body)
+        : Model.parseMetAlerts(response.body, url.indexOf("lang=no") >= 0 ? "nb" : "en")
+      if (!parsed) return recordFailure(kind, url, "unreadable response")
+      setWarnSource(warnProvider(kind), { key: url, etag: v.etag, lastModified: v.lastModified, warnings: parsed.warnings })
+      markWarnChecked(kind, url, now, response)
+    } else if (kind === "warnFmiRss") {
+      var rss = Model.parseFmiRss(response.body)
+      if (!rss) return recordFailure(kind, url, "unreadable response")
+      if (!rss.needsAtom) {
+        setWarnSource("fmi", { key: url, etag: v.etag, lastModified: v.lastModified, ids: rss.ids, warnings: [] })
+        markWarnChecked(kind, url, now, response)
+      } else if (!anyOpen || offline || warningProviders().indexOf("fmi") < 0) {
+        // Closed, or moved out of Finland, while the RSS was on its way: no
+        // Atom download now; the next check in Finland asks again.
+        forgetWarnCheck(kind)
+        return
+      } else {
+        fmiPending = { key: url, etag: v.etag, lastModified: v.lastModified, ids: rss.ids, response: response }
+        startWarnFetch(warnFmiAtomProc, "warnFmiAtom", Model.FMI_ATOM_URL, true)
+      }
+    } else if (kind === "warnFmiAtom") {
+      var pending = fmiPending
+      fmiPending = null
+      if (!pending) return
+      var atom = Model.parseFmiAtom(response.body)
+      if (!atom) {
+        forgetWarnCheck("warnFmiRss")
+        return recordFailure("warnFmiRss", pending.key, "unreadable Atom feed")
+      }
+      // The two feeds are published seconds apart: when the Atom feed isn't
+      // the publication the RSS listed yet, keep its warnings but not the
+      // RSS validators, and look again shortly.
+      var inStep = pending.ids.length === atom.ids.length
+        && pending.ids.every(function(id) { return atom.ids.indexOf(id) >= 0 })
+      setWarnSource("fmi", { key: pending.key, etag: inStep ? pending.etag : "", lastModified: inStep ? pending.lastModified : "",
+                             ids: atom.ids, warnings: atom.warnings })
+      if (inStep) markWarnChecked("warnFmiRss", pending.key, now, pending.response)
+      else {
+        forgetWarnCheck("warnFmiRss")
+        recordFailure("warnFmiRss", pending.key, "FMI feeds out of step")
+      }
+    }
+  }
+
+  // Only this service writes it, so there is nothing to watch.
+  FileView {
+    id: warnFile
+    atomicWrites: true
+    printErrors: false
+    onLoaded: {
+      root.warnStore = Model.parseWarningStore(text())
+      root.warnStoreLoaded = true
+      root.rebuild()
+      root.maybeFetch(false)
+    }
+    onLoadFailed: {
+      if (root.warnStoreLoaded) return
+      root.warnStoreLoaded = true
+      root.maybeFetch(false)
+    }
   }
 
   // ---------------------------------------------------------------- location search
@@ -885,9 +1141,11 @@ Scope {
       if (exitCode === 0) {
         root.cacheReady = true
         cacheFile.path = root.cacheDir + "/cache.json"
+        warnFile.path = root.cacheDir + "/warnings.json"
       } else {
         console.warn("nordic-weather: cache directory unavailable")
         root.cacheLoaded = true
+        root.warnStoreLoaded = true
         root.rebuild()
         root.maybeFetch(false)
       }
@@ -940,6 +1198,10 @@ Scope {
   FetchProcess { id: yrObsProc; kind: "yrObs" }
   FetchProcess { id: yrNowProc; kind: "yrNow" }
   FetchProcess { id: lightningProc; kind: "lightning" }
+  FetchProcess { id: warnSmhiProc; kind: "warnSmhi" }
+  FetchProcess { id: warnMetProc; kind: "warnMet" }
+  FetchProcess { id: warnFmiRssProc; kind: "warnFmiRss" }
+  FetchProcess { id: warnFmiAtomProc; kind: "warnFmiAtom" }
 
   // Both scripts print two numbers (see Model.tileDownloadCommand and
   // Model.frameComposeCommand). The next step starts once the process has
