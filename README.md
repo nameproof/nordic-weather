@@ -24,7 +24,7 @@ Languages: Swedish, Norwegian, Danish, Finnish or English, following the
 language chosen in Omarchy, else the system locale; English for anything else.
 
 <img width="1215" height="846" alt="1-dark-goteborg" src="https://github.com/user-attachments/assets/988bb816-85c7-4b08-896b-3be2761efc8f" />
-<img width="1215" height="828" alt="2-dark-goteborg-radar" src="https://github.com/user-attachments/assets/afc73cf7-4ed6-4169-8c7f-4acee63aa941" />
+<img width="1215" height="828" alt="2-dark-goteborg-radar" src="https://github.com/user-attachments/assets/425451fb-ae61-4c85-9fdb-cc1a713cfddb" />
 <img width="1215" height="828" alt="3-light-helsinki-radar" src="https://github.com/user-attachments/assets/5f20e767-a920-4515-be9d-9a17cf1e2843" />
 
 ## Install
