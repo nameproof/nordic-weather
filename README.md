@@ -23,9 +23,9 @@ Follows Omarchy's theming colors, including the Radar!
 Languages: Swedish, Norwegian, Danish, Finnish or English, following the
 language chosen in Omarchy, else the system locale; English for anything else.
 
-<img width="1215" height="898" alt="screenshot-2026-09-29_12-15-56-cropped" src="https://github.com/user-attachments/assets/4551c485-867e-451f-8977-b1164179a2df" />
-<img width="1215" height="898" alt="screenshot-2026-09-29_12-15-28-cropped" src="https://github.com/user-attachments/assets/4ae46c34-307f-4d34-963b-9cc370fdbff1" />
-<img width="1215" height="898" alt="screenshot-2026-09-29_12-17-15-cropped" src="https://github.com/user-attachments/assets/9c9b6283-bd6d-47e2-8252-276dcad05874" />
+<img width="1215" height="846" alt="1-dark-goteborg" src="https://github.com/user-attachments/assets/988bb816-85c7-4b08-896b-3be2761efc8f" />
+<img width="1215" height="828" alt="2-dark-goteborg-radar" src="https://github.com/user-attachments/assets/afc73cf7-4ed6-4169-8c7f-4acee63aa941" />
+<img width="1215" height="828" alt="3-light-helsinki-radar" src="https://github.com/user-attachments/assets/5f20e767-a920-4515-be9d-9a17cf1e2843" />
 
 ## Install
 
