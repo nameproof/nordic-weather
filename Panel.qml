@@ -294,7 +294,7 @@ Panel {
     (0.45 - (0.299 * mapLand.r + 0.587 * mapLand.g + 0.114 * mapLand.b)) / 0.3))
 
   // Forecast column width; the radar side panel is added next to it.
-  readonly property int forecastWidth: Style.space(540)
+  readonly property int forecastWidth: Style.space(535)
   readonly property int radarGap: Style.space(16)
   // The radar map's size (Nordic proportions), smaller when the panel
   // doesn't fit it.
@@ -305,7 +305,7 @@ Panel {
   readonly property int hourRowHeight: Style.space(20)
   readonly property int colHour: Style.space(26)
   readonly property int colIcon: Style.space(24)
-  readonly property int colTemp: Style.space(52)
+  readonly property int colTemp: Style.space(40)
   readonly property int colPop: Style.space(40)
   readonly property int colAmount: Style.space(92)
   readonly property int pieSize: Style.space(12)
@@ -848,13 +848,51 @@ Panel {
                 anchors.verticalCenter: parent.verticalCenter
                 spacing: Style.space(2)
 
+                // Room up to the values, laid out at their smallest gaps. The
+                // condition wraps to a second line when it needs to, then
+                // steps down one font size, and is elided only past that.
                 Text {
+                  id: heroCondition
+                  readonly property real room: Math.max(Style.space(60), hero.width - root.skyGlyphRoom
+                    - statsRow.columnsWidth - Style.space(10) * 2 - Style.space(16)
+                    - heroMain.anchors.leftMargin - tempBox.width - heroMain.spacing)
+                  readonly property var sizes: [Style.font.subtitle, Style.font.body]
+                  // The largest size whose two lines hold the whole text.
+                  readonly property int fitSize: {
+                    for (var i = 0; i < conditionProbes.count; i++) {
+                      var probe = conditionProbes.itemAt(i)
+                      if (probe && !probe.truncated) return sizes[i]
+                    }
+                    return sizes[sizes.length - 1]
+                  }
+                  width: Math.min(implicitWidth, room)
                   textFormat: Text.PlainText
                   text: root.view.current ? root.view.current.description : ""
+                  wrapMode: Text.Wrap
+                  maximumLineCount: 2
+                  elide: Text.ElideRight
                   color: root.fg
                   font.family: root.fontFamily
-                  font.pixelSize: Style.font.subtitle
+                  font.pixelSize: fitSize
                   font.bold: true
+
+                  Repeater {
+                    id: conditionProbes
+                    model: heroCondition.sizes
+                    Text {
+                      required property int modelData
+                      visible: false
+                      width: heroCondition.room
+                      textFormat: Text.PlainText
+                      text: heroCondition.text
+                      wrapMode: Text.Wrap
+                      maximumLineCount: 2
+                      elide: Text.ElideRight
+                      font.family: root.fontFamily
+                      font.pixelSize: modelData
+                      font.bold: true
+                    }
+                  }
                 }
                 Text {
                   textFormat: Text.PlainText
@@ -1319,6 +1357,10 @@ Panel {
                         anchors.verticalCenter: parent.verticalCenter
                         textFormat: Text.PlainText
                         text: hourRow.modelData.description
+                        // A long condition steps down one font size before
+                        // it is elided.
+                        fontSizeMode: Text.HorizontalFit
+                        minimumPixelSize: Style.font.bodySmall
                         elide: Text.ElideRight
                         color: root.fg
                         font.family: root.fontFamily
