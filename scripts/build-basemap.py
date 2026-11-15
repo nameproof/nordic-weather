@@ -8,10 +8,12 @@ Maintainer tool, not needed to run the plugin. Reads OSM extracts and the
 simplified land polygons from build/osm/ (regions in
 scripts/basemap-regions.txt), and writes:
 
-  map/tiles/{z}/{x}/{y}.png  Web Mercator tiles holding *masks*, not colours:
-                             R = water, G = roads (brighter = bigger road),
-                             B = country borders. shaders/mapdata.frag turns
-                             them into theme colours at display time.
+  map/tiles/{z}/{x}/{y}.webp Web Mercator tiles holding *masks*, not colours,
+                             as lossless WebP: G = water, R = roads (brighter =
+                             bigger road), B = country borders.
+                             shaders/mapdata.frag turns them into theme colours
+                             at display time. 512 px (392 at zoom 5): twice the
+                             largest size a tile is drawn at, for monitor scale 2.
   map/places.json            Cities and towns for labels drawn by the panel.
 
 Run with uv, which provides the dependencies listed above:
@@ -28,6 +30,7 @@ import json
 import math
 import os
 import pickle
+import shutil
 import sys
 import zipfile
 from concurrent.futures import ProcessPoolExecutor
@@ -43,7 +46,11 @@ OUT = os.path.join(ROOT, "map")
 # the zoom-5 overview frame around it (whole tiles).
 COVERAGE = (0.5, 54.2, 35.5, 72.8)
 ZOOMS = (5, 6, 7)
+# Logical tile size: the panel draws tiles at up to 256 px.
 TILE = 256
+# Pixels per tile file, per zoom: twice the largest drawn size (zoom 5 is drawn
+# at most 196 px, in the overview). As MAP_TILE_FILE_PX in Model.js.
+TILE_FILE_PX = {5: 392, 6: 512, 7: 512}
 # The map box in the panel, for the overview frame (as Model.mapView).
 MAP_BOX = (659, 761)
 SUPERSAMPLE = 4
@@ -51,9 +58,9 @@ SUPERSAMPLE = 4
 R = 6378137.0
 HALF = math.pi * R
 
-# Smallest lake kept, in true square metres (≈ half a pixel at zoom 7).
+# Smallest lake kept, in true square metres (≈ one pixel of a zoom-7 tile at 60° N).
 MIN_WATER_M2 = 100_000
-# Road classes: (value in the G channel, first zoom shown, width in px at 256).
+# Road classes: (mask value, first zoom shown, width in px of a tile drawn at 256).
 ROADS = {
     "motorway": (255, 5, 1.6),
     "trunk": (215, 5, 1.3),
@@ -304,13 +311,42 @@ def render_all(jobs):
     _R["borders_tree"] = STRtree(borders)
 
     tiles = [(z, x, y) for z in ZOOMS for x in tile_range(z)[0] for y in tile_range(z)[1]]
-    print(f"rendering {len(tiles)} tiles…", flush=True)
+    # Rendered into a fresh staging folder in build/; map/tiles is replaced only once
+    # every tile is there, so a failed run leaves the shipped tiles as they were.
+    dest = os.path.join(OUT, "tiles")
+    staging = os.path.join(BUILD, "tiles.new")
+    os.makedirs(BUILD, exist_ok=True)
+    for p in (dest, staging):
+        if os.path.islink(p):
+            sys.exit(f"{p} is a symlink; not writing through it")
+    if os.path.exists(staging):
+        shutil.rmtree(staging)
+    _R["tiles_dir"] = staging
+    print(f"rendering {len(tiles)} tiles (every lossless WebP setting per tile: minutes)…", flush=True)
     with ProcessPoolExecutor(max_workers=jobs, mp_context=multiprocessing.get_context("fork")) as pool:
         done = 0
         for _ in pool.map(render_tile, tiles, chunksize=4):
             done += 1
             if done % 50 == 0:
                 print(f"  {done}/{len(tiles)}", flush=True)
+    written = sorted(os.path.relpath(os.path.join(d, f), staging) for d, _, fs in os.walk(staging) for f in fs)
+    expected = sorted(os.path.join(str(z), str(x), f"{y}.webp") for z, x, y in tiles)
+    if written != expected:
+        sys.exit(f"staging has {len(written)} files, expected {len(expected)}; map/tiles left unchanged")
+    old = os.path.join(BUILD, "tiles.old")
+    if os.path.exists(old):
+        shutil.rmtree(old)
+    try:
+        if os.path.exists(dest):
+            os.rename(dest, old)
+        os.rename(staging, dest)
+    except BaseException:
+        # Put the previous tiles back if the new ones did not make it in.
+        if os.path.exists(old) and not os.path.exists(dest):
+            os.rename(old, dest)
+        raise
+    if os.path.exists(old):
+        shutil.rmtree(old)
 
 
 # Geometry and spatial indexes for the render workers (filled before forking).
@@ -322,13 +358,15 @@ def render_tile(zxy):
     from shapely.geometry import box
 
     z, x, y = zxy
-    size = TILE * SUPERSAMPLE
+    out = TILE_FILE_PX[z]
+    k = out / TILE  # line widths are given for a tile drawn at 256 px
+    size = out * SUPERSAMPLE
     span = 2 * HALF / 2 ** z
     minx = -HALF + x * span
     maxy = HALF - y * span
     bounds = box(minx, maxy - span, minx + span, maxy)
     pad = bounds.buffer(span * 0.02)
-    tol = span / TILE * 0.3
+    tol = span / out * 0.3
     scale = size / span
 
     def px(coords):
@@ -354,7 +392,7 @@ def render_tile(zxy):
             return [geom]
         return [g for g in getattr(geom, "geoms", []) if g.geom_type == "LineString"]
 
-    # R: water. Start as sea, cut out land, then add lakes (with their islands).
+    # Water: start as sea, cut out land, then add lakes (with their islands).
     water_img = Image.new("L", (size, size), 255)
     wd = ImageDraw.Draw(water_img)
     land_here = []
@@ -365,7 +403,7 @@ def render_tile(zxy):
     for i in _R["water_tree"].query(pad):
         fill(wd, _R["water"][i].intersection(pad).simplify(tol), 255, 0)
 
-    # G: roads, biggest last so they win where they overlap.
+    # Roads, biggest last so they win where they overlap.
     road_img = Image.new("L", (size, size), 0)
     rd = ImageDraw.Draw(road_img)
     order = sorted(_R["roads_tree"].query(pad), key=lambda i: ROADS[_R["roads"][i][0]][0])
@@ -374,11 +412,11 @@ def render_tile(zxy):
         value, min_zoom, width = ROADS[cls]
         if z < min_zoom:
             continue
-        w = max(1, round(width * SUPERSAMPLE * (0.8 if z == 5 else 1.0)))
+        w = max(1, round(width * k * SUPERSAMPLE * (0.8 if z == 5 else 1.0)))
         for line in lines(g.intersection(pad).simplify(tol)):
             rd.line(px(line.coords), fill=value, width=w, joint="curve")
 
-    # B: national borders, on land only.
+    # National borders, on land only.
     border_img = Image.new("L", (size, size), 0)
     bd = ImageDraw.Draw(border_img)
     if land_here:
@@ -387,13 +425,44 @@ def render_tile(zxy):
         for i in _R["borders_tree"].query(pad):
             g = _R["borders"][i].intersection(pad).intersection(land_union).simplify(tol)
             for line in lines(g) + [l for p in polys(g) for l in lines(p)]:
-                bd.line(px(line.coords), fill=255, width=max(1, round(BORDER_WIDTH * SUPERSAMPLE)), joint="curve")
+                bd.line(px(line.coords), fill=255, width=max(1, round(BORDER_WIDTH * k * SUPERSAMPLE)), joint="curve")
 
-    img = Image.merge("RGB", [water_img, road_img, border_img]).resize((TILE, TILE), Image.BOX)
-    path = os.path.join(OUT, "tiles", str(z), str(x), f"{y}.png")
+    # Stored G = water, R = roads, B = borders: of the six channel orders this
+    # one compresses smallest.
+    img = Image.merge("RGB", [road_img, water_img, border_img]).resize((out, out), Image.BOX)
+    path = os.path.join(_R["tiles_dir"], str(z), str(x), f"{y}.webp")
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    img.save(path, optimize=True)
+    with open(path, "wb") as f:
+        f.write(encode_tile(img))
     return zxy
+
+
+# Qt's WebP plugin refuses files shorter than sizeof(WebPBitstreamFeatures),
+# 40 bytes, before it reads them: the shortest encodes of a one-colour tile
+# (36 bytes) would not load.
+QT_MIN_WEBP = 40
+
+
+def encode_tile(img):
+    """The smallest lossless WebP of a tile, over every method and quality
+    (libwebp's settings that change a lossless file), verified to decode to
+    the same pixels."""
+    import io
+    import numpy as np
+    from PIL import Image
+
+    best = None
+    for method in range(7):
+        for quality in range(101):
+            buf = io.BytesIO()
+            img.save(buf, "WEBP", lossless=True, method=method, quality=quality, exact=True)
+            data = buf.getvalue()
+            if len(data) >= QT_MIN_WEBP and (best is None or len(data) < len(best)):
+                best = data
+    decoded = Image.open(io.BytesIO(best)).convert("RGB")
+    if not np.array_equal(np.asarray(decoded), np.asarray(img)):
+        raise RuntimeError("WebP tile does not decode to the rendered pixels")
+    return best
 
 
 def write_places(places):

@@ -739,13 +739,32 @@ test("map zoom steps", () => {
   assert.equal(M.clampMapStep(undefined), M.MAP_DEFAULT_STEP)
   assert.deepEqual(M.radarView({ z: 7, px: 256, left: 1, top: 2 }), { z: 6, px: 512, left: 1, top: 2 })
   assert.deepEqual(M.radarView({ z: 6, px: 181, left: 1, top: 2 }), { z: 6, px: 181, left: 1, top: 2 })
-  assert.equal(M.mapTilePath({ z: 6, x: 34, y: 19 }), "map/tiles/6/34/19.png")
+  assert.equal(M.mapTilePath({ z: 6, x: 34, y: 19 }), "map/tiles/6/34/19.webp")
   // The build script uses the same coverage box and zoom steps.
   const script = fs.readFileSync(path.join(__dirname, "..", "scripts", "build-basemap.py"), "utf8")
   const c = M.RADAR_COVERAGE
   assert.ok(script.includes(`COVERAGE = (${c.west}, ${c.south}, ${c.east}, ${c.north})`), "COVERAGE out of sync")
   const zooms = [...new Set(M.MAP_ZOOM_STEPS.map((s) => s.z))].join(", ")
   assert.ok(script.includes(`ZOOMS = (${zooms})`), "ZOOMS out of sync")
+  const filePx = Object.entries(M.MAP_TILE_FILE_PX).map(([z, px]) => `${z}: ${px}`).join(", ")
+  assert.ok(script.includes(`TILE_FILE_PX = {${filePx}}`), "TILE_FILE_PX out of sync")
+})
+
+test("map tile decode size: drawn size in device pixels, at most the file's", () => {
+  assert.equal(M.mapTileDecodePx({ z: 7, size: 256 }, 1), 256)
+  assert.equal(M.mapTileDecodePx({ z: 7, size: 256 }, 1.25), 320)
+  assert.equal(M.mapTileDecodePx({ z: 6, size: 181 }, 1.25), 227)
+  assert.equal(M.mapTileDecodePx({ z: 6, size: 181 }, 1.5), 272)
+  assert.equal(M.mapTileDecodePx({ z: 7, size: 256 }, 2), 512)
+  assert.equal(M.mapTileDecodePx({ z: 7, size: 256 }, 3), 512)
+  assert.equal(M.mapTileDecodePx({ z: 5, size: 196 }, 2), 392)
+  assert.equal(M.mapTileDecodePx({ z: 7, size: 256 }, undefined), 256)
+  // At the panel's map box (MAP_BOX in the build script) every zoom step's
+  // tiles are drawn at most half their file's size, so scale 2 stays sharp.
+  for (let step = 0; step < M.MAP_ZOOM_STEPS.length; step++) {
+    const v = M.mapView(step, 59.33, 18.07, 659, 761)
+    assert.ok(v.px * 2 <= M.MAP_TILE_FILE_PX[v.z], `step ${step}: ${v.px} px of ${M.MAP_TILE_FILE_PX[v.z]}`)
+  }
 })
 
 test("radar frames: observations then nowcast, with the now marker", () => {

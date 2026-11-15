@@ -2040,12 +2040,16 @@ var YR_RADAR_NOWCAST_INDEX = YR_TILES + "/api/precipitation-nowcast/available.js
 // The radar tiles stop at zoom 6; at 7 they are drawn scaled up.
 var YR_RADAR_ZOOM = 6
 var MAP_TILE_PX = 256
+// Pixels per base-map tile file, per zoom: twice the largest drawn size, so
+// tiles stay sharp at monitor scale 2 (zoom 5 is drawn at most 196 px). As
+// TILE_FILE_PX in scripts/build-basemap.py.
+var MAP_TILE_FILE_PX = { 5: 392, 6: 512, 7: 512 }
 // Credited after MET Norway, under the radar map.
 var MAP_ATTRIBUTION = " · OpenStreetMap · yr.no"
 // Zoom steps: which tiles, drawn at how many px per tile. Step 1 draws the
 // zoom-6 tiles at 181 px (≈ zoom 5.5: shrinking keeps them sharp). Across
-// the 659 px map: ≈1700 km, 1200 km, 850 km, 425 km. Keep in sync with
-// DISPLAY_STEPS in scripts/build-basemap.py.
+// the 659 px map: ≈1700 km, 1200 km, 850 km, 425 km. Their zooms are the
+// ZOOMS that scripts/build-basemap.py renders.
 var MAP_ZOOM_STEPS = [
   { z: 5, px: 0, overview: true, minPop: 150000 },  // px: fitted to the coverage
   { z: 6, px: 181, minPop: 70000 },
@@ -2113,9 +2117,16 @@ function radarView(view) {
   return { z: z, px: view.px * Math.pow(2, view.z - z), left: view.left, top: view.top }
 }
 
+// Pixels to decode a base map tile at: its drawn size in device pixels
+// (dpr = monitor scale), at most the file's size.
+function mapTileDecodePx(tile, dpr) {
+  var scale = isNum(dpr) && dpr > 0 ? dpr : 1
+  return Math.min(Math.ceil(tile.size * scale), MAP_TILE_FILE_PX[tile.z])
+}
+
 // Base map tile, relative to the plugin folder.
 function mapTilePath(tile) {
-  return "map/tiles/" + tile.z + "/" + tile.x + "/" + tile.y + ".png"
+  return "map/tiles/" + tile.z + "/" + tile.x + "/" + tile.y + ".webp"
 }
 
 // Position in tile units at zoom z.
@@ -2594,6 +2605,8 @@ if (typeof module !== "undefined") {
     YR_RADAR_NOWCAST_INDEX: YR_RADAR_NOWCAST_INDEX,
     YR_RADAR_ZOOM: YR_RADAR_ZOOM,
     MAP_TILE_PX: MAP_TILE_PX,
+    MAP_TILE_FILE_PX: MAP_TILE_FILE_PX,
+    mapTileDecodePx: mapTileDecodePx,
     MAP_ATTRIBUTION: MAP_ATTRIBUTION,
     MAP_ZOOM_STEPS: MAP_ZOOM_STEPS,
     MAP_DEFAULT_STEP: MAP_DEFAULT_STEP,

@@ -81,7 +81,7 @@ scripts/lint                # qmllint against the installed Omarchy shell
 
 ### Base map
 
-`map/` (~5 MB) holds the base map tiles and `places.json` for labels. The
+`map/` (~7 MB) holds the base map tiles and `places.json` for labels. The
 tiles are water/road/border masks that `shaders/mapdata.frag` colours with
 the theme. Rebuilding them from OpenStreetMap needs ~6 GB of downloads
 (regions in `scripts/basemap-regions.txt`) into the git-ignored `build/`:

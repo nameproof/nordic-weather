@@ -1,6 +1,9 @@
 {
   "name": "nordic-weather",
   "private": true,
+  "engines": {
+    "node": ">=20.1"
+  },
   "scripts": {
     "test": "TZ=Europe/Stockholm node --test tests/*.test.js"
   }

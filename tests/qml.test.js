@@ -32,3 +32,31 @@ test("Qt: radar image readiness, loop replacement and coverage", {
     fs.rmSync(dir, { recursive: true, force: true })
   }
 })
+
+test("Qt: every base map tile loads", {
+  skip: !fs.existsSync("/usr/lib/qt6/bin/qmltestrunner") ? "Qt Quick Test required" : false
+}, () => {
+  const M = require("./load-model.js")
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "nordic-tiles-qml-"))
+  try {
+    const tiles = path.join(__dirname, "..", "map", "tiles")
+    const list = fs.readdirSync(tiles, { recursive: true })
+      .filter((f) => f.endsWith(".webp"))
+      .map((f) => [path.join(tiles, f), M.MAP_TILE_FILE_PX[Number(f.split(path.sep)[0])]])
+    // 5/15/6 is open sea (west of Norway): its masks are water only.
+    const sea = path.join(tiles, "5", "15", "6.webp")
+    fs.writeFileSync(path.join(dir, "tiles.js"), ".pragma library\nvar list = " + JSON.stringify(list) +
+      "\nvar sea = " + JSON.stringify(sea) + "\n")
+    fs.copyFileSync(path.join(__dirname, "qml", "tst_BaseTiles.qml"), path.join(dir, "tst_BaseTiles.qml"))
+    const runtime = path.join(dir, "runtime")
+    fs.mkdirSync(runtime, { mode: 0o700 })
+    const result = spawnSync("/usr/lib/qt6/bin/qmltestrunner", ["-input", dir], {
+      encoding: "utf8", timeout: 60000,
+      env: { ...process.env, QT_QPA_PLATFORM: "offscreen", QT_QUICK_BACKEND: "software",
+        XDG_RUNTIME_DIR: runtime, XDG_CACHE_HOME: path.join(dir, "cache"), QML_DISABLE_DISK_CACHE: "1" }
+    })
+    assert.equal(result.status, 0, (result.error || "") + result.stdout + result.stderr)
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})

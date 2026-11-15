@@ -1700,7 +1700,10 @@ Panel {
 
           // Base map: mask tiles shipped in map/tiles, coloured by the theme.
           Item {
+            id: baseMap
             anchors.fill: parent
+            // The window's device pixels per logical pixel (monitor scale).
+            readonly property real dpr: Window.window ? Window.window.devicePixelRatio : 1
             layer.enabled: true
             layer.effect: ShaderEffect {
               property color landColor: root.mapLand
@@ -1720,10 +1723,12 @@ Panel {
                 width: modelData.size
                 height: modelData.size
                 asynchronous: true
-                // Decoded at the drawn size, so tiles shown smaller (zoom 5.5,
-                // overview) stay sharp without mipmaps.
-                sourceSize.width: Math.min(modelData.size, Model.MAP_TILE_PX)
-                sourceSize.height: Math.min(modelData.size, Model.MAP_TILE_PX)
+                // Decoded at the drawn size in device pixels, at most the
+                // file's: sharp on scaled monitors, and tiles shown smaller
+                // (zoom 5.5, overview) stay sharp without mipmaps.
+                readonly property int decodePx: Model.mapTileDecodePx(modelData, baseMap.dpr)
+                sourceSize.width: decodePx
+                sourceSize.height: decodePx
                 source: Qt.resolvedUrl(Model.mapTilePath(modelData))
               }
             }
