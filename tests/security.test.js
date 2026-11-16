@@ -261,6 +261,39 @@ test("place search caps unique rows and text before building keys or saving", ()
   assert.equal(loc.name.length, 256)
 })
 
+test("search text is trimmed, capped and well-formed before it becomes a curl argument", () => {
+  const max = M.MAX_SEARCH_LENGTH
+  const pair = "\u{1F327}"  // two UTF-16 units
+  const cases = [
+    ["  Bergen \n", "Bergen"],
+    ["", ""],
+    [null, ""],
+    ["x".repeat(max), "x".repeat(max)],
+    ["x".repeat(max + 1), "x".repeat(max)],
+    ["x".repeat(1024 * 1024), "x".repeat(max)],
+    [" ".repeat(1024 * 1024) + "Oslo", "Oslo"],
+    ["x".repeat(max - 2) + pair, "x".repeat(max - 2) + pair],
+    ["x".repeat(max - 1) + pair, "x".repeat(max - 1)],  // pair straddles the limit: the half is dropped
+    ["x".repeat(max - 2) + " " + pair, "x".repeat(max - 2)],
+    ["a\uD800b", "ab"],
+    ["a\uDC00b", "ab"],
+    ["\uDC00\uD800", ""],
+    ["Göte\u{1F327}borg", "Göte\u{1F327}borg"]
+  ]
+  for (const [input, expected] of cases) {
+    const query = M.searchQuery(input)
+    assert.equal(query, expected, JSON.stringify(input).slice(0, 40))
+    assert.equal(M.searchQuery(query), query)
+    assert.ok(query.length <= max)
+  }
+
+  // Worst case: every unit the start of a 4-byte UTF-8 character.
+  for (const input of [pair.repeat(1024 * 1024), "\uD800".repeat(1024 * 1024), "x".repeat(1024 * 1024)]) {
+    const command = M.geocodeCommand(input, "sv", "agent/1")
+    for (const arg of command) assert.ok(Buffer.byteLength(arg) < 4096, `argument of ${Buffer.byteLength(arg)} bytes`)
+  }
+})
+
 test("forecast expansion bounds steps, symbols and nested measurements", () => {
   const step = { data: { instant: { details: { air_temperature: 12 } },
     next_1_hours: { summary: { symbol_code: "clearsky_day" }, details: { precipitation_amount: 0 } } } }

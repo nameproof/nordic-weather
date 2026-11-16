@@ -646,7 +646,7 @@ Scope {
   // One request at a time; if the query moved on while a request was in
   // flight, the latest query is fetched right after. (Panels debounce typing.)
   function search(text) {
-    var query = String(text || "").trim()
+    var query = Model.searchQuery(text)
     if (query.length < 2) {
       clearSearch()
       return

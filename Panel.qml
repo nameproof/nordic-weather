@@ -93,6 +93,7 @@ Panel {
     if (!opened) {
       radarOpen = false
       warnUnfolded = ({})
+      if (editingLocation) cancelEditingLocation()
     }
     reportViewer()
   }
@@ -217,13 +218,15 @@ Panel {
     return 0
   }
 
+  // Editing creates the field (locationLoader); searchText is what it holds.
   function startEditingLocation() {
     editingLocation = true
+    searchText = ""
+    if (locationLoader.item) locationLoader.item.text = ""
     if (service) service.clearSearch()
     Qt.callLater(function() {
-      locationField.text = ""
       root.suggestionIndex = root.firstDropdownIndex()
-      locationField.forceActiveFocus()
+      if (root.editingLocation && locationLoader.item) locationLoader.item.forceActiveFocus()
     })
   }
 
@@ -231,23 +234,23 @@ Panel {
     editingLocation = false
     geocodeDebounce.stop()
     if (service) service.clearSearch()
-    Qt.callLater(function() { if (keyCatcher) keyCatcher.forceActiveFocus() })
+    Qt.callLater(function() { if (root.opened && !root.editingLocation && keyCatcher) keyCatcher.forceActiveFocus() })
   }
 
   function commitLocation() {
     // Empty field: the selected favourite (the current place just closes);
     // with none, it cancels. It is never a way to remove the location.
-    if (locationField.text.trim() === "") {
+    if (searchText.trim() === "") {
       pickFavorite(dropdownRows[suggestionIndex])
       return
     }
     // Enter before the debounce fired: search now, pick on the next Enter.
     if (geocodeDebounce.running || (service && service.searchBusy())) {
       geocodeDebounce.stop()
-      if (service) service.search(locationField.text)
+      if (service) service.search(searchText)
       return
     }
-    pickSuggestion(Model.locationCommit(locationField.text, locationSuggestions, suggestionIndex))
+    pickSuggestion(Model.locationCommit(searchText, locationSuggestions, suggestionIndex))
   }
 
   function pickSuggestion(suggestion) {
@@ -262,7 +265,7 @@ Panel {
   Timer {
     id: geocodeDebounce
     interval: 300
-    onTriggered: if (root.service) root.service.search(locationField.text)
+    onTriggered: if (root.service) root.service.search(root.searchText)
   }
 
   // ---------------------------------------------------------------- UI
@@ -740,36 +743,46 @@ Panel {
                 visible: root.editingLocation
                 spacing: Style.space(6)
 
-                TextField {
-                  id: locationField
-                  width: Style.space(210)
-                  enabled: !root.savingLocation
-                  placeholderText: root.t.searchPlaceholder
-                  foreground: root.fg
-                  font.family: root.fontFamily
-                  onTextChanged: {
-                    root.searchText = text
-                    if (root.editingLocation && !root.savingLocation) geocodeDebounce.restart()
-                  }
-                  Keys.onPressed: function(event) {
-                    if (event.key === Qt.Key_Escape) {
-                      if (root.hasLocation) root.cancelEditingLocation()
-                      else root.close()
-                      event.accepted = true
-                    } else if (event.key === Qt.Key_Down) {
-                      if (root.suggestionIndex < root.dropdownRows.length - 1) root.suggestionIndex++
-                      event.accepted = true
-                    } else if (event.key === Qt.Key_Delete && root.showingFavorites) {
-                      var row = root.dropdownRows[root.suggestionIndex]
-                      if (row && root.service) root.service.removeFavorite(row.placeKey)
-                      root.suggestionIndex = Math.max(0, Math.min(root.suggestionIndex, root.dropdownRows.length - 2))
-                      event.accepted = true
-                    } else if (event.key === Qt.Key_Up) {
-                      if (root.suggestionIndex > 0) root.suggestionIndex--
-                      event.accepted = true
-                    } else if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
-                      root.commitLocation()
-                      event.accepted = true
+                // The field exists only while editing. Qt's text inputs
+                // check the clipboard whenever it changes (on Wayland also
+                // when the shell gains keyboard focus, as when this panel
+                // opens), and through Qt 6.12.0 that check reads the whole
+                // clipboard on the GUI thread, so a stalled clipboard owner
+                // would freeze the shell.
+                Loader {
+                  id: locationLoader
+                  active: root.editingLocation
+                  sourceComponent: TextField {
+                    width: Style.space(210)
+                    enabled: !root.savingLocation
+                    maximumLength: Model.MAX_SEARCH_LENGTH
+                    placeholderText: root.t.searchPlaceholder
+                    foreground: root.fg
+                    font.family: root.fontFamily
+                    onTextChanged: {
+                      root.searchText = text
+                      if (root.editingLocation && !root.savingLocation) geocodeDebounce.restart()
+                    }
+                    Keys.onPressed: function(event) {
+                      if (event.key === Qt.Key_Escape) {
+                        if (root.hasLocation) root.cancelEditingLocation()
+                        else root.close()
+                        event.accepted = true
+                      } else if (event.key === Qt.Key_Down) {
+                        if (root.suggestionIndex < root.dropdownRows.length - 1) root.suggestionIndex++
+                        event.accepted = true
+                      } else if (event.key === Qt.Key_Delete && root.showingFavorites) {
+                        var row = root.dropdownRows[root.suggestionIndex]
+                        if (row && root.service) root.service.removeFavorite(row.placeKey)
+                        root.suggestionIndex = Math.max(0, Math.min(root.suggestionIndex, root.dropdownRows.length - 2))
+                        event.accepted = true
+                      } else if (event.key === Qt.Key_Up) {
+                        if (root.suggestionIndex > 0) root.suggestionIndex--
+                        event.accepted = true
+                      } else if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
+                        root.commitLocation()
+                        event.accepted = true
+                      }
                     }
                   }
                 }
@@ -2145,7 +2158,7 @@ Panel {
             var at = point.scenePosition
             if (Math.abs(at.x - pressedAt.x) > Style.space(8) || Math.abs(at.y - pressedAt.y) > Style.space(8)) return
             var inside = function(item) { return item.visible && item.contains(item.mapFromItem(null, at)) }
-            if (!inside(locationField) && !inside(searchDropdown)) root.cancelEditingLocation()
+            if (!inside(locationLoader) && !inside(searchDropdown)) root.cancelEditingLocation()
           }
         }
       }

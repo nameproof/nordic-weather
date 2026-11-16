@@ -499,8 +499,29 @@ function moonUrl(location, ms) {
     + "&offset=" + encodeURIComponent(utcOffsetString(ms))
 }
 
+// Place search text as sent: trimmed, at most MAX_SEARCH_LENGTH UTF-16
+// units (the unit of the field's maximumLength; place names are far
+// shorter), and well-formed, since encodeURIComponent throws on a lone
+// surrogate (one half of a pair cut at the limit, or malformed input).
+var MAX_SEARCH_LENGTH = 100
+
+function searchQuery(text) {
+  var cut = String(text || "").trim().slice(0, MAX_SEARCH_LENGTH)
+  var out = ""
+  for (var i = 0; i < cut.length; i++) {
+    var c = cut.charCodeAt(i)
+    if (c >= 0xd800 && c <= 0xdbff) {
+      var next = i + 1 < cut.length ? cut.charCodeAt(i + 1) : 0
+      if (next >= 0xdc00 && next <= 0xdfff) out += cut.charAt(i) + cut.charAt(++i)
+    } else if (c < 0xdc00 || c > 0xdfff) {
+      out += cut.charAt(i)
+    }
+  }
+  return out.trim()
+}
+
 function geocodeUrl(query, lang) {
-  return "https://geocoding-api.open-meteo.com/v1/search?name=" + encodeURIComponent(query)
+  return "https://geocoding-api.open-meteo.com/v1/search?name=" + encodeURIComponent(searchQuery(query))
     + "&count=6&format=json&language=" + strings(lang).geocode
 }
 
@@ -2686,6 +2707,8 @@ if (typeof module !== "undefined") {
     nowcastUrl: nowcastUrl,
     sunUrl: sunUrl,
     moonUrl: moonUrl,
+    MAX_SEARCH_LENGTH: MAX_SEARCH_LENGTH,
+    searchQuery: searchQuery,
     geocodeUrl: geocodeUrl,
     geocodeCommand: geocodeCommand,
     MAX_RESPONSE_BYTES: MAX_RESPONSE_BYTES,
