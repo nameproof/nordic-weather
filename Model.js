@@ -80,9 +80,8 @@ var STRINGS = {
     rain: "Regn",
     sleet: "Snöblandat regn",
     snow: "Snö",
-    nowcastDry: "Uppehåll {n} min",
+    nowcastDry: "Uppehåll",
     nowcastUnavailable: "Radar otillgänglig",
-    nowcastWetAll: "{kind} {n} min",
     nowcastStopping: "{kind} upphör om {n} min",
     nowcastStarting: "{kind} om {n} min",
     radar: "Radar",
@@ -139,9 +138,8 @@ var STRINGS = {
     rain: "Regn",
     sleet: "Sludd",
     snow: "Snø",
-    nowcastDry: "Opphold {n} min",
+    nowcastDry: "Opphold",
     nowcastUnavailable: "Radar utilgjengelig",
-    nowcastWetAll: "{kind} {n} min",
     nowcastStopping: "{kind} gir seg om {n} min",
     nowcastStarting: "{kind} om {n} min",
     radar: "Radar",
@@ -197,9 +195,8 @@ var STRINGS = {
     rain: "Regn",
     sleet: "Slud",
     snow: "Sne",
-    nowcastDry: "Tørvejr {n} min",
+    nowcastDry: "Tørvejr",
     nowcastUnavailable: "Radar utilgængelig",
-    nowcastWetAll: "{kind} {n} min",
     nowcastStopping: "{kind} stopper om {n} min",
     nowcastStarting: "{kind} om {n} min",
     radar: "Radar",
@@ -258,9 +255,8 @@ var STRINGS = {
     rain: "Vesisade",
     sleet: "Räntäsade",
     snow: "Lumisade",
-    nowcastDry: "Poutaa {n} min",
+    nowcastDry: "Poutaa",
     nowcastUnavailable: "Tutka ei käytettävissä",
-    nowcastWetAll: "{kind} {n} min",
     nowcastStopping: "{kind} loppuu {n} min kuluttua",
     nowcastStarting: "{kind} alkaa {n} min kuluttua",
     radar: "Tutka",
@@ -316,9 +312,8 @@ var STRINGS = {
     rain: "Rain",
     sleet: "Sleet",
     snow: "Snow",
-    nowcastDry: "Dry {n} min",
+    nowcastDry: "Dry",
     nowcastUnavailable: "Radar unavailable",
-    nowcastWetAll: "{kind} {n} min",
     nowcastStopping: "{kind} stops in {n} min",
     nowcastStarting: "{kind} in {n} min",
     radar: "Radar",
@@ -1354,20 +1349,19 @@ function buildNowcast(nowcast, nowMs, lang) {
   if (points.length < 2) return null
 
   var s2 = strings(lang)
-  var horizon = Math.round(points[points.length - 1].minutes / 5) * 5
   var firstWet = -1
   for (var w = 0; w < points.length; w++) if (points[w].rate > 0) { firstWet = w; break }
 
   var summary
   if (firstWet < 0) {
-    summary = fill(s2.nowcastDry, { n: horizon })
+    summary = s2.nowcastDry
   } else {
     var kind = kindWord(points[firstWet].kind, lang)
     if (firstWet === 0) {
       var firstDry = -1
       for (var d = 1; d < points.length; d++) if (points[d].rate <= 0) { firstDry = d; break }
       summary = firstDry < 0
-        ? fill(s2.nowcastWetAll, { kind: kind, n: horizon })
+        ? kind
         : fill(s2.nowcastStopping, { kind: kind, n: Math.max(5, points[firstDry].minutes) })
     } else {
       summary = fill(s2.nowcastStarting, { kind: kind, n: Math.max(5, points[firstWet].minutes) })
@@ -2596,7 +2590,7 @@ function tileDownloadCommand(dir, downloads, agent) {
 }
 
 // One line for scripts (`omarchy-shell omarchy.weather summary`):
-// "Alingsås · Klart 12° · Vind 2 m/s S · Uppehåll 110 min".
+// "Alingsås · Klart 12° · Vind 2 m/s S · Uppehåll".
 // Before there is data: the "fetching" / "choose a place" text.
 function summaryText(view) {
   var note = notification(view)

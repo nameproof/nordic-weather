@@ -527,7 +527,7 @@ test("long range precipitation does not double count overlapping periods", () =>
 
 test("nowcast summary", () => {
   const dry = M.buildNowcast(nowcastAlingsas, nowcastAlingsas.steps[0].ms, "sv")
-  assert.match(dry.summary, /^Uppehåll \d+ min$/)
+  assert.equal(dry.summary, "Uppehåll")
   assert.equal(dry.wet, false)
 
   const wetLater = JSON.parse(JSON.stringify(nowcastAlingsas))
@@ -538,6 +538,15 @@ test("nowcast summary", () => {
   const stopping = JSON.parse(JSON.stringify(nowcastAlingsas))
   for (let i = 0; i < 3; i++) stopping.steps[i].instant.precipitation_rate = 1.2
   assert.equal(M.buildNowcast(stopping, stopping.steps[0].ms, "en").summary, "Precipitation stops in 15 min")
+
+  const wetAll = JSON.parse(JSON.stringify(nowcastAlingsas))
+  for (const st of wetAll.steps) {
+    st.instant.precipitation_rate = 0.8
+    st.period1 = { hours: 1, symbol: "snow", details: {} }
+  }
+  const allWet = M.buildNowcast(wetAll, wetAll.steps[0].ms, "sv")
+  assert.equal(allWet.summary, "Snö")
+  assert.equal(allWet.wet, true)
 
   // MET's radar down for the place: the row stays (with the radar button),
   // saying only that; notification and summary leave it out.
