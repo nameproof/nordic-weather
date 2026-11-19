@@ -1,5 +1,6 @@
 pragma ComponentBehavior: Bound
 import QtQuick
+import QtQuick.Effects
 import QtQuick.Shapes
 import Quickshell
 import qs.Commons
@@ -1279,10 +1280,10 @@ Panel {
                   readonly property real windX: width - Style.space(8) - root.colWind
                   readonly property real popRight: windX - gap - root.colAmount - gap
                   readonly property real tempRight: popRight - root.colPop - gap
+                  readonly property real popCenter: popRight - root.colPop / 2
 
                   component ColumnIcon: Text {
                     required property real center
-                    property real glyphScale: 1
                     x: Math.round(center - width / 2)
                     width: Style.space(16)
                     anchors.verticalCenter: parent.verticalCenter
@@ -1290,12 +1291,83 @@ Panel {
                     textFormat: Text.PlainText
                     color: root.dim
                     font.family: root.fontFamily
-                    font.pixelSize: Math.round(Style.font.body * glyphScale)
+                    font.pixelSize: Style.font.body
                   }
                   // The thermometer over the last digit and the unit, the
-                  // drop over the chance pie.
-                  ColumnIcon { center: columnIcons.tempRight - columnIcons.charWidth; text: "\ue34e"; glyphScale: 11 / 14 }  // thermometer exterior
-                  ColumnIcon { center: columnIcons.popRight - root.colPop / 2; text: daySection.modelData.precipGlyph }  // rain, sleet or snow
+                  // precipitation icon over the chance pie.
+                  ColumnIcon { center: columnIcons.tempRight - columnIcons.charWidth; text: "\udb81\udd0f" }  // nf-md-thermometer
+                  // A raindrop or snowflake, or a faint slashed drop when no
+                  // row shows precipitation. Sleet has its own icon below.
+                  ColumnIcon {
+                    readonly property string kind: daySection.modelData.precipKind
+                    center: columnIcons.popCenter
+                    visible: kind !== "sleet"
+                    color: kind === "" ? root.faint : root.dim
+                    text: kind === "snow" ? "" : kind === "rain" ? "" : "\udb81\udd8d"  // snowflake_cold, raindrop, nf-md-water_off
+                  }
+                  // Sleet: the snowflake in front of the raindrop, cut into
+                  // it by a thin gap, as one glyph. Nudged right of its box
+                  // centre: the solid drop outweighs the thin snowflake.
+                  Item {
+                    id: sleetIcon
+                    visible: daySection.modelData.precipKind === "sleet"
+                    x: Math.round(columnIcons.popCenter - width / 2) + Style.space(1)
+                    width: Style.space(20)
+                    height: parent.height
+
+                    component SleetGlyph: Text {
+                      width: sleetIcon.width
+                      height: sleetIcon.height
+                      horizontalAlignment: Text.AlignHCenter
+                      verticalAlignment: Text.AlignVCenter
+                      textFormat: Text.PlainText
+                      color: root.dim
+                      font.family: root.fontFamily
+                    }
+                    SleetGlyph {
+                      id: sleetDrop
+                      x: -Style.space(3)
+                      text: ""  // raindrop
+                      font.pixelSize: Math.round(Style.font.body * 4 / 3)
+                      visible: false
+                      layer.enabled: true
+                    }
+                    // The snowflake with its outline, laid over the drop's
+                    // area: the part of the drop cut away.
+                    Item {
+                      id: sleetGap
+                      x: sleetDrop.x
+                      width: sleetDrop.width
+                      height: sleetDrop.height
+                      visible: false
+                      layer.enabled: true
+                      SleetGlyph {
+                        x: sleetFlake.x - sleetDrop.x
+                        y: sleetFlake.y - sleetDrop.y
+                        text: sleetFlake.text
+                        font.pixelSize: sleetFlake.font.pixelSize
+                        color: "white"
+                        style: Text.Outline
+                        styleColor: "white"
+                      }
+                    }
+                    MultiEffect {
+                      source: sleetDrop
+                      x: sleetDrop.x
+                      width: sleetDrop.width
+                      height: sleetDrop.height
+                      maskEnabled: true
+                      maskInverted: true
+                      maskSource: sleetGap
+                    }
+                    SleetGlyph {
+                      id: sleetFlake
+                      x: Style.space(2)
+                      y: Style.space(1)
+                      text: ""  // snowflake_cold
+                      font.pixelSize: Style.font.body
+                    }
+                  }
                   // Centred over the speed and arrow.
                   ColumnIcon {
                     center: columnIcons.windX + root.colWind / 2
@@ -1499,7 +1571,7 @@ Panel {
                 }
                 Item {
                   id: rangeTrack
-                  width: dayRow.width - Style.space(40) - root.colIcon - Style.space(34) * 2 - Style.space(70) - dayRow.spacing * 5
+                  width: dayRow.width - Style.space(40) - root.colIcon - Style.space(34) - rangeMax.width - Style.space(70) - dayRow.spacing * 5
                   height: Style.space(6)
                   anchors.verticalCenter: parent.verticalCenter
 
@@ -1518,9 +1590,15 @@ Panel {
                     opacity: 0.6
                   }
                 }
+                // Right-aligned so the degree signs line up, as wide as the
+                // longest max value (at most four characters, "-10°"). A
+                // longer value spills left into the gap before the track,
+                // about one character wide.
                 Text {
-                  width: Style.space(34)
+                  id: rangeMax
+                  width: Math.ceil(digitMetrics.advanceWidth * Math.min(4, dayRow.rangeScale.maxChars))
                   anchors.verticalCenter: parent.verticalCenter
+                  horizontalAlignment: Text.AlignRight
                   textFormat: Text.PlainText
                   text: dayRow.modelData.max + "°"
                   color: root.fg

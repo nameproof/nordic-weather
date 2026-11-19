@@ -1193,23 +1193,19 @@ function buildRow(step, lang, sixHour) {
   }
 }
 
-var PRECIP_GLYPHS = {
-  rain: "\ue371",   // raindrop
-  sleet: "\ue371\ue36f",  // raindrop and snowflake
-  snow: "\ue36f"    // snowflake_cold
-}
-
-// Glyph for a day's precipitation column: the kind (rain, sleet, snow) of
-// its most likely precipitation. With none in any symbol, snow when every
-// row is at or below 0°, otherwise rain.
-function precipGlyph(rows) {
+// Kind ("rain", "sleet", "snow") for a day's precipitation column icon:
+// that of its most likely precipitation. With none in any symbol, snow when
+// every row is at or below 0°, otherwise rain. "" when no row shows a chance
+// pie or an amount.
+function precipColumnKind(rows) {
+  if (rows.every(function(row) { return row.precip.quarters === 0 && row.precip.text === "" })) return ""
   var best = null
   for (var i = 0; i < rows.length; i++) {
     var r = rows[i]
     if (r.precip.kind && (best === null || (r.precip.probability || 0) > (best.precip.probability || 0))) best = r
   }
   var frozen = rows.length > 0 && rows.every(function(row) { return row.temp !== null && row.temp <= 0 })
-  return PRECIP_GLYPHS[best ? best.precip.kind : frozen ? "snow" : "rain"]
+  return best ? best.precip.kind : frozen ? "snow" : "rain"
 }
 
 // Sections for today and the following days. Today and tomorrow get rows
@@ -1244,7 +1240,7 @@ function buildHourlyDays(forecast, nowMs, hourStep, dayCount, lang) {
       rows.push(buildRow(s, lang, sixHour))
     }
     if (rows.length) days.push({ start: start, title: dayTitle(start, todayStart, lang), sixHour: sixHour,
-                                 precipGlyph: precipGlyph(rows), rows: rows })
+                                 precipKind: precipColumnKind(rows), rows: rows })
   }
   return days
 }
@@ -1311,14 +1307,22 @@ function buildLongRange(forecast, nowMs, dayCount, lang, fromStart) {
   return out
 }
 
+// The day list's shared temperature range for its bars, and maxChars: the
+// longest max value with its degree sign, in characters (at least 2), which
+// sizes the max column.
 function longRangeScale(days) {
   var lo = Infinity
   var hi = -Infinity
+  var maxChars = 2
   for (var i = 0; i < days.length; i++) {
     if (isNum(days[i].min)) lo = Math.min(lo, days[i].min)
-    if (isNum(days[i].max)) hi = Math.max(hi, days[i].max)
+    if (isNum(days[i].max)) {
+      hi = Math.max(hi, days[i].max)
+      maxChars = Math.max(maxChars, String(days[i].max).length + 1)
+    }
   }
-  return isFinite(lo) ? { min: lo, max: Math.max(hi, lo + 1) } : { min: 0, max: 1 }
+  if (!isFinite(lo)) return { min: 0, max: 1, maxChars: 2 }
+  return { min: lo, max: Math.max(hi, lo + 1), maxChars: maxChars }
 }
 
 function kindWord(kind, lang) {
@@ -1429,7 +1433,7 @@ function buildView(input) {
     nowcast: null,
     days: [],
     longRange: [],
-    longRangeScale: { min: 0, max: 1 },
+    longRangeScale: { min: 0, max: 1, maxChars: 2 },
     sun: buildSun(input.sun),
     moon: buildMoon(input.moon, nowMs, lang),
     // Not tied to the forecast: shown as soon as the location is known.
@@ -2765,8 +2769,9 @@ if (typeof module !== "undefined") {
     lightningShape: lightningShape,
     lightningSeed: lightningSeed,
     buildPressure: buildPressure,
-    precipGlyph: precipGlyph,
+    precipColumnKind: precipColumnKind,
     buildLongRange: buildLongRange,
+    longRangeScale: longRangeScale,
     buildNowcast: buildNowcast,
     buildView: buildView,
     notification: notification,

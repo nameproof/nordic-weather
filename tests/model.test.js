@@ -471,17 +471,20 @@ test("hourly days: 3 h steps, then 6 h steps past the hourly range", () => {
   assert.equal(M.buildHourlyDays(alingsas, NOW, 3, 3, "en")[2].title, "Monday Sep 28")
 })
 
-test("day precipitation glyph follows the most likely kind", () => {
-  const row = (kind, probability, temp) => ({ temp: temp, precip: { kind: kind, probability: probability } })
-  assert.equal(M.precipGlyph([row("", 0, 5), row("rain", 40, 3)]), "\ue371")
-  assert.equal(M.precipGlyph([row("rain", 20, 1), row("snow", 60, -1)]), "\ue36f")
-  assert.equal(M.precipGlyph([row("sleet", 50, 1), row("snow", 30, 0)]), "\ue371\ue36f")
+test("day precipitation column kind follows the most likely kind", () => {
+  const row = (kind, probability, temp, text) => ({ temp: temp, precip: { kind: kind, probability: probability,
+    quarters: M.chanceQuarters(probability), text: text || "" } })
+  assert.equal(M.precipColumnKind([row("", 0, 5), row("rain", 40, 3)]), "rain")
+  assert.equal(M.precipColumnKind([row("rain", 20, 1), row("snow", 60, -1)]), "snow")
+  assert.equal(M.precipColumnKind([row("sleet", 50, 1), row("snow", 30, 0)]), "sleet")
   // No precipitation symbol: snow only when every row is frozen.
-  assert.equal(M.precipGlyph([row("", 0, -4), row("", 5, -1)]), "\ue36f")
-  assert.equal(M.precipGlyph([row("", 0, -4), row("", 5, 1)]), "\ue371")
-  assert.equal(M.precipGlyph([row("", 0, null)]), "\ue371")
+  assert.equal(M.precipColumnKind([row("", 0, -4), row("", 20, -1)]), "snow")
+  assert.equal(M.precipColumnKind([row("", 0, -4), row("", 20, 1)]), "rain")
+  assert.equal(M.precipColumnKind([row("", 0, null, "0-1 mm")]), "rain")
+  // No row with a pie or an amount: no kind.
+  assert.equal(M.precipColumnKind([row("", 0, -4), row("", 10, -1), row("", null, 2)]), "")
   const days = M.buildHourlyDays(alingsas, NOW, 3, 3, "sv")
-  assert.ok(days.every((d) => d.precipGlyph === M.precipGlyph(d.rows)))
+  assert.ok(days.every((d) => d.precipKind === M.precipColumnKind(d.rows)))
 })
 
 test("hourly rows carry precipitation and wind", () => {
@@ -588,6 +591,15 @@ test("full view model", () => {
   assert.match(note.headline, /^Alingsås {2}· {2}Klart \d+°$/)
   assert.match(note.body, /^Vind \d+ m\/s \S+ {2}· {2}Uppehåll/)
   assert.equal(note.glyph, view.current.icon)
+})
+
+test("day list max column is as wide as its longest max value", () => {
+  const days = (maxes) => maxes.map((max) => ({ min: max - 3, max: max }))
+  assert.equal(M.longRangeScale(days([2, 0, 9])).maxChars, 2)
+  assert.equal(M.longRangeScale(days([2, -1, 5])).maxChars, 3)
+  assert.equal(M.longRangeScale(days([12, 3])).maxChars, 3)
+  assert.equal(M.longRangeScale(days([-10, 2])).maxChars, 4)
+  assert.equal(M.longRangeScale([]).maxChars, 2)
 })
 
 test("summary line for scripts", () => {
