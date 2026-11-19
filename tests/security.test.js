@@ -309,6 +309,177 @@ test("forecast expansion bounds steps, symbols and nested measurements", () => {
   assert.ok(view.days.reduce((count, day) => count + day.rows.length, 0) <= 256)
 })
 
+test("malformed provider symbols and measurements never break the view", () => {
+  const raw = JSON.parse(fixture("forecast-alingsas.json"))
+  const nowMs = Date.parse(raw.properties.timeseries[0].time) + 60000
+  const viewFor = (edit) => {
+    const d = JSON.parse(JSON.stringify(raw))
+    d.properties.timeseries.forEach(edit)
+    const forecast = M.parseTimeseries(JSON.stringify(d))
+    return M.buildView({ forecast, location: { name: "Test", latitude: 58, longitude: 12 }, nowMs, lang: "en" })
+  }
+  for (const code of ["constructor", "__proto__", "toString", "hasOwnProperty", "valueOf",
+    "clearsky\u2028_day", "cloudy\u2029", "\u2028", "_night", "lightsconstructor"]) {
+    const view = viewFor((t) => {
+      for (const k of ["next_1_hours", "next_6_hours", "next_12_hours"])
+        if (t.data[k] && t.data[k].summary) t.data[k].summary.symbol_code = code
+    })
+    const rows = view.days.flatMap((day) => day.rows)
+    for (const text of [view.current.description, view.current.icon, ...rows.map((r) => r.description), ...rows.map((r) => r.icon),
+      M.summaryText(view)])
+      assert.equal(typeof text, "string", JSON.stringify(code))
+    assert.ok(!/function|\[object/.test(M.summaryText(view)), M.summaryText(view))
+  }
+  assert.deepEqual(M.splitSymbol("rain\u2028_night"), { base: "rain\u2028", variant: "night" })
+  assert.deepEqual(M.splitSymbol({ toString: 1 }), { base: "", variant: "" })
+
+  // Measurements past any real value are dropped, not interpolated into
+  // Infinity or NaN.
+  const extreme = viewFor((t, i) => { t.data.instant.details.air_pressure_at_sea_level = i % 2 ? 1e308 : -1e308 })
+  assert.equal(extreme.current.pressure, null)
+  const hot = viewFor((t, i) => {
+    if (i % 3) return
+    t.data.instant.details.air_temperature = 1e308
+    for (const k of ["next_6_hours", "next_12_hours"]) if (t.data[k]) t.data[k].details.air_temperature_max = 1e308
+  })
+  assert.ok(hot.longRange.length > 0)
+  assert.ok(hot.longRange.every((day) => Math.abs(day.max) < 100 && Math.abs(day.min) < 100))
+  assert.ok(Number.isFinite(hot.longRangeScale.max - hot.longRangeScale.min))
+})
+
+test("only usable forecasts and nowcasts are cached or kept from disk", () => {
+  const forecastBody = fixture("forecast-alingsas.json")
+  const nowcastBody = fixture("nowcast-alingsas.json")
+  const forecast = M.parseTimeseries(forecastBody)
+  const nowcast = M.parseTimeseries(nowcastBody)
+  const at = (parsed) => parsed.steps[0].ms
+  const hour = 3600000
+  assert.ok(M.usableTimeseries("forecast", forecast, at(forecast)))
+  assert.ok(M.usableTimeseries("nowcast", nowcast, at(nowcast)))
+  // Radar down for the place: no rates, still shown as such.
+  const down = M.parseTimeseries(fixture("nowcast-alingsas-unavailable.json"))
+  assert.ok(M.usableTimeseries("nowcast", down, at(down)))
+  // A forecast only from long ago, or with no temperature near now.
+  assert.ok(!M.usableTimeseries("forecast", forecast, at(forecast) + 365 * 24 * hour))
+  assert.ok(!M.usableTimeseries("forecast", M.parseTimeseries('{"properties":{"timeseries":[]}}'), NOW))
+  const time = new Date(NOW).toISOString()
+  assert.ok(!M.usableTimeseries("forecast", M.parseTimeseries(JSON.stringify({ properties: { timeseries: [{ time, data: {} }] } })), NOW))
+  const yearOld = { time: new Date(NOW - 365 * 24 * hour).toISOString(), data: { instant: { details: { air_temperature: 3 } } } }
+  assert.ok(!M.usableTimeseries("forecast", M.parseTimeseries(JSON.stringify({ properties: { timeseries: [{ time, data: {} }, yearOld] } })), NOW))
+  // Nowcasts: a rate on every step from now on, MET's coverage states only,
+  // and steps still ahead.
+  const rateless = JSON.parse(nowcastBody)
+  delete rateless.properties.timeseries[3].data.instant.details.precipitation_rate
+  assert.ok(!M.usableTimeseries("nowcast", M.parseTimeseries(JSON.stringify(rateless)), at(nowcast)))
+  const coverage = (value) => {
+    const n = JSON.parse(nowcastBody)
+    n.properties.meta.radar_coverage = value
+    n.properties.timeseries = []
+    return M.parseTimeseries(JSON.stringify(n))
+  }
+  assert.ok(M.usableTimeseries("nowcast", coverage("no coverage"), NOW))
+  assert.ok(!M.usableTimeseries("nowcast", coverage("weird"), NOW))
+  assert.ok(!M.usableTimeseries("nowcast", coverage(""), NOW))
+  assert.ok(!M.usableTimeseries("nowcast", nowcast, at(nowcast) + 6 * hour))
+  assert.ok(!M.usableTimeseries("sun", forecast, at(forecast)))
+  assert.ok(!M.usableTimeseries("forecast", forecast))
+
+  // A 304 renews only a stored entry for the same request, and no Expires
+  // holds off refreshing for more than a day.
+  const notModified = { status: 304, headers: {}, body: "" }
+  assert.equal(M.cacheEntryFromResponse(null, "k", notModified, NOW), null)
+  assert.equal(M.cacheEntryFromResponse({ key: "other", body: "x" }, "k", notModified, NOW), null)
+  assert.equal(M.cacheEntryFromResponse({ key: "k", body: "x", lastModified: "" }, "k", notModified, NOW).body, "x")
+  const farFuture = { status: 200, headers: { expires: "Thu, 01 Jan 2099 00:00:00 GMT" }, body: "x" }
+  assert.equal(M.cacheEntryFromResponse(null, "k", farFuture, NOW).expiresMs, NOW + M.MAX_CACHE_TTL_MS)
+
+  // cache.json as loaded: complete, usable entries and known keys only, and
+  // nothing can reach the object's prototype.
+  const nowMs = at(forecast)
+  const entry = (key, body) => ({ key, body, lastModified: "", expiresMs: nowMs + hour, fetchedMs: nowMs })
+  const good = entry("f", forecastBody)
+  const sun = entry("s", fixture("sun-alingsas.json"))
+  assert.deepEqual(M.usableCache({ forecast: good, sun, prefs: { mapStep: 1 }, elevations: { "57.93,12.53": 55 } }, nowMs),
+                   { forecast: good, sun, prefs: { mapStep: 1 }, elevations: { "57.93,12.53": 55 } })
+  assert.deepEqual(M.usableCache({ forecast: entry("f", '{"properties":{"timeseries":[]}}'), sun: entry("s", "{}") }, nowMs), {})
+  assert.deepEqual(M.usableCache({ nowcast: entry("n", "") }, nowMs), { nowcast: entry("n", "") })
+  assert.deepEqual(M.usableCache({ nowcast: { key: "n", body: "" } }, nowMs), {})
+  assert.deepEqual(M.usableCache({ moon: Object.assign(entry("m", fixture("moon-alingsas.json")), { fetchedMs: "x" }) }, nowMs), {})
+  assert.deepEqual(M.usableCache({ forecast: Object.assign({}, good, { lastModified: 7 }), extra: { a: 1 } }, nowMs), {})
+  assert.deepEqual(M.usableCache({ elevations: { a: 1e300, b: "12", c: 40 }, prefs: { mapStep: "x" } }, nowMs), { elevations: { c: 40 } })
+  for (const bad of [null, [], "text", 7]) assert.deepEqual(M.usableCache(bad, nowMs), {})
+  const polluted = M.usableCache(JSON.parse('{"__proto__": {"polluted": true}, "elevations": {"__proto__": 5}}'), nowMs)
+  assert.equal(Object.getPrototypeOf(polluted), Object.prototype)
+  assert.equal(polluted.polluted, undefined)
+  assert.equal(Object.getPrototypeOf(polluted.elevations), Object.prototype)
+})
+
+test("dates, coordinates and elevations from providers stay in range", () => {
+  assert.equal(M.parseIsoMs("2026-03-01T06:00:00Z"), Date.parse("2026-03-01T06:00:00Z"))
+  assert.equal(M.parseIsoMs("2026-02-28T06:00+01:00"), Date.parse("2026-02-28T05:00:00Z"))
+  for (const bad of ["2026-02-31T06:00:00Z", "2026-13-01T06:00:00Z", "2026-01-01T24:00:00Z", "2026-01-01T12:60:00Z",
+    "2026-01-01T12:00:61Z", "2026-01-01T12:00+25:00", "2026-01-01T12:00+01:60"])
+    assert.ok(Number.isNaN(M.parseIsoMs(bad)), bad)
+  assert.ok(Number.isNaN(M.parseIsoMs({ toString: 1 })))
+  const unset = { name: "", latitude: null, longitude: null }
+  assert.deepEqual(M.parseLocationFile(JSON.stringify({ name: "X", latitude: { toString: 1 }, longitude: 12 })),
+                   { name: "X", latitude: null, longitude: null })
+  assert.deepEqual(M.parseLocationFile(JSON.stringify({ latitude: 91, longitude: 12 })), unset)
+  assert.equal(M.parseLocationFile(JSON.stringify({ latitude: "57.9", longitude: "12.5" })).latitude, 57.9)
+  const place = { latitude: 57.93, longitude: 12.53 }
+  assert.match(M.forecastUrl(Object.assign({ elevation: 55.4 }, place)), /&altitude=55$/)
+  for (const elevation of [1e300, -1e4, NaN, "55"])
+    assert.doesNotMatch(M.forecastUrl(Object.assign({ elevation }, place)), /altitude/, String(elevation))
+  const found = M.parseGeocodingResults(JSON.stringify({ results: [{ name: "Top", latitude: 58, longitude: 12, elevation: 1e300 }] }))
+  assert.equal(found[0].elevation, null)
+})
+
+test("responses are read as curl received them, and only for their own day or place", () => {
+  // Only interim answers come before the response (curl leaves out a
+  // proxy's CONNECT reply); a body that looks like headers stays body.
+  const plain = M.parseHttpResponse("HTTP/2 200\r\ncontent-type: application/json\r\n\r\nHTTP/2 422\r\nx: y\r\n\r\nbody")
+  assert.equal(plain.status, 200)
+  assert.equal(plain.body, "HTTP/2 422\r\nx: y\r\n\r\nbody")
+  assert.equal(M.parseHttpResponse("HTTP/1.1 100 Continue\r\n\r\nHTTP/1.1 304 Not Modified\r\n\r\n").status, 304)
+  assert.ok(M.curlCommand("https://x", "", 10, "agent/1").includes("--suppress-connect-headers"))
+
+  // Times outside this century, sunrises far from the day asked about and
+  // coordinates that only start with a number.
+  assert.ok(Number.isNaN(M.parseIsoMs("1999-12-31T23:00:00Z")))
+  assert.ok(Number.isNaN(M.parseIsoMs("2100-01-01T00:00:00Z")))
+  assert.ok(Number.isNaN(M.parseHttpDateMs("Fri, 31 Dec 9999 23:59:59 GMT")))
+  const sunBody = fixture("sun-alingsas.json")
+  const sun = M.parseSun(sunBody)
+  assert.ok(M.parseSun(sunBody, sun.riseMs + 6 * 3600000))
+  assert.equal(M.parseSun(sunBody, sun.riseMs + 5 * 24 * 3600000), null)
+  assert.equal(M.parseGeoLocation(JSON.stringify({ latitude: "58north", longitude: "12,53" })), null)
+  assert.deepEqual(M.parseGeoLocation(JSON.stringify({ latitude: " 57.93 ", longitude: "12.53" })),
+                   { name: "", latitude: 57.93, longitude: 12.53 })
+  const forecast = M.parseTimeseries(fixture("forecast-alingsas.json"))
+  const nowMs = forecast.steps[0].ms
+  const entry = { key: "m", body: fixture("moon-alingsas.json"), lastModified: "", expiresMs: nowMs + 3600000, fetchedMs: 1e20 }
+  assert.deepEqual(M.usableCache({ moon: entry }, nowMs), {})
+
+  // The forecast step the hero shows needs a temperature; a nowcast starts
+  // about now and stays within the next hours.
+  const gap = JSON.parse(fixture("forecast-alingsas.json"))
+  delete gap.properties.timeseries[0].data.instant.details.air_temperature
+  assert.ok(!M.usableTimeseries("forecast", M.parseTimeseries(JSON.stringify(gap)), nowMs))
+  const nowcast = JSON.parse(fixture("nowcast-alingsas.json"))
+  const later = (days) => nowcast.properties.timeseries.map((t) => ({ ...t, time: new Date(Date.parse(t.time) + days * 86400000).toISOString() }))
+  const first = Date.parse(nowcast.properties.timeseries[0].time)
+  assert.ok(!M.usableTimeseries("nowcast", M.parseTimeseries(JSON.stringify({ ...nowcast, properties: { ...nowcast.properties, timeseries: later(100) } })), first))
+})
+
+test("the location field is never a Qt TextInput", () => {
+  // Through Qt 6.12.0 a TextInput (and every TextField) reads the whole
+  // clipboard on the GUI thread when it changes; TextEdit only checks formats.
+  for (const file of ["Panel.qml", "BarWidget.qml", "Service.qml", "RadarImages.qml"]) {
+    const source = fs.readFileSync(path.join(__dirname, "..", file), "utf8").replace(/\/\/.*$/gm, "")
+    assert.doesNotMatch(source, /\b(TextField|TextInput)\s*\{/, file)
+  }
+})
+
 test("celestial validation rejects malformed data and keeps polar events", () => {
   for (const body of ["<html>", "{}", '{"properties":{}}', '{"properties":{"sunrise":{},"sunset":null}}',
     '{"properties":{"sunrise":{"time":"soon"},"sunset":{"time":null}}}']) {

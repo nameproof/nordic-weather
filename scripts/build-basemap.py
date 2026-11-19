@@ -29,9 +29,11 @@ import argparse
 import json
 import math
 import os
-import pickle
 import shutil
+import stat
+import struct
 import sys
+import tempfile
 import zipfile
 from concurrent.futures import ProcessPoolExecutor
 
@@ -131,8 +133,8 @@ def extract_region(pbf):
     from shapely import wkb as shp_wkb
 
     name = os.path.basename(pbf).replace("-latest.osm.pbf", "")
-    out_path = os.path.join(EXTRACTED, name + ".pickle")
-    if os.path.exists(out_path) and os.path.getmtime(out_path) > os.path.getmtime(pbf):
+    out_path = os.path.join(EXTRACTED, name + EXTRACT_SUFFIX)
+    if os.path.exists(out_path) and os.path.getmtime(out_path) > os.path.getmtime(pbf) and extract_usable(out_path):
         return name, "cached"
 
     factory = osmium.geom.WKBFactory()
@@ -178,10 +180,120 @@ def extract_region(pbf):
             continue
 
     os.makedirs(EXTRACTED, exist_ok=True)
-    with open(out_path + ".part", "wb") as f:
-        pickle.dump({"water": water, "roads": roads, "borders": borders}, f)
-    os.replace(out_path + ".part", out_path)
+    write_extract(out_path, water, roads, borders)
     return name, f"{len(water)} water, {len(roads)} roads, {len(borders)} border ways"
+
+
+# The extract cache, build/extracted/<region>.features: plain data, never
+# code. The magic and a version, then three sections in order (water,
+# roads, borders), each a record count and its records: a length and that
+# many WKB bytes, a road record first naming its class (one of ROADS).
+# Little-endian. Reading rejects anything short, longer, of another version
+# or naming another class, and only reads regular files. --extract redoes a
+# cached file that does not read back whole with usable geometry.
+EXTRACT_MAGIC = b"NWBF"
+EXTRACT_VERSION = 1
+EXTRACT_SUFFIX = ".features"
+MAX_WKB_BYTES = 256 * 1024 * 1024
+MAX_EXTRACT_BYTES = 4 * 1024 * 1024 * 1024
+EXTRACT_TYPES = {"water": {"Polygon", "MultiPolygon"}, "roads": {"LineString"}, "borders": {"LineString"}}
+
+
+class ExtractError(ValueError):
+    pass
+
+
+def write_extract(path, water, roads, borders):
+    # A new temporary file next to the target (created exclusively, so it
+    # cannot be a planted link), moved into place once complete.
+    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path), prefix=".extract-", suffix=".part")
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(EXTRACT_MAGIC + struct.pack("<I", EXTRACT_VERSION))
+            for section, records in (("water", water), ("roads", roads), ("borders", borders)):
+                f.write(struct.pack("<I", len(records)))
+                for record in records:
+                    if section == "roads":
+                        cls, record = record
+                        name = cls.encode("ascii")
+                        f.write(struct.pack("<B", len(name)) + name)
+                    f.write(struct.pack("<I", len(record)))
+                    f.write(record)
+        os.replace(tmp, path)
+    except BaseException:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+        raise
+
+
+def read_extract(path, keep=True):
+    """An extract cache file → (water, roads, borders) as WKB bytes, roads as
+    (class, WKB). With keep=False only checks the file (records are skipped,
+    not read) and returns None."""
+    if not stat.S_ISREG(os.lstat(path).st_mode):
+        raise ExtractError("not a regular file")
+    with os.fdopen(os.open(path, os.O_RDONLY | os.O_NOFOLLOW), "rb") as f:
+        size = os.fstat(f.fileno()).st_size
+        if size > MAX_EXTRACT_BYTES:
+            raise ExtractError("larger than any extract")
+
+        def take(n):
+            if n > size - f.tell():
+                raise ExtractError("truncated")
+            chunk = f.read(n)
+            if len(chunk) != n:
+                raise ExtractError("truncated")
+            return chunk
+
+        def u32():
+            return struct.unpack("<I", take(4))[0]
+
+        def records(with_class):
+            count = u32()
+            # Every record takes at least its length field (and a class byte).
+            if count > (size - f.tell()) // (5 if with_class else 4):
+                raise ExtractError("record count exceeds the file")
+            out = []
+            for _ in range(count):
+                cls = None
+                if with_class:
+                    cls = take(take(1)[0]).decode("ascii", errors="replace")
+                    if cls not in ROADS:
+                        raise ExtractError(f"unknown road class {cls!r}")
+                n = u32()
+                if n > MAX_WKB_BYTES or n > size - f.tell():
+                    raise ExtractError("truncated" if n <= MAX_WKB_BYTES else "record too large")
+                if keep:
+                    blob = take(n)
+                    out.append((cls, blob) if with_class else blob)
+                else:
+                    f.seek(n, os.SEEK_CUR)
+            return out
+
+        if take(4) != EXTRACT_MAGIC:
+            raise ExtractError("not an extract file")
+        if u32() != EXTRACT_VERSION:
+            raise ExtractError("other version")
+        water, roads, borders = records(False), records(True), records(False)
+        if f.tell() != size:
+            raise ExtractError("trailing data")
+    return (water, roads, borders) if keep else None
+
+
+def extract_usable(path):
+    """Whether an extract cache file reads back whole, every record a
+    non-empty geometry of its section's type (needs shapely)."""
+    from shapely import wkb as shp_wkb
+    try:
+        water, roads, borders = read_extract(path)
+        for section, blobs in (("water", water), ("roads", [g for _, g in roads]), ("borders", borders)):
+            for blob in blobs:
+                g = shp_wkb.loads(blob)
+                if g.is_empty or g.geom_type not in EXTRACT_TYPES[section]:
+                    return False
+    except Exception:
+        return False
+    return True
 
 
 def extract_places(pbf):
@@ -233,8 +345,17 @@ def to_merc(geom):
     return shapely.transform(geom, project)
 
 
+def region_names():
+    """The base map's regions (scripts/basemap-regions.txt), as file names."""
+    with open(REGIONS) as f:
+        return [os.path.basename(line.strip()) for line in f if line.strip() and not line.startswith("#")]
+
+
 def extract_all(jobs):
-    pbfs = sorted(os.path.join(OSM, f) for f in os.listdir(OSM) if f.endswith("-latest.osm.pbf"))
+    pbfs = [os.path.join(OSM, name + "-latest.osm.pbf") for name in region_names()]
+    missing = [p for p in pbfs if not os.path.exists(p)]
+    if missing:
+        sys.exit(f"missing {', '.join(os.path.basename(p) for p in missing)}; run --download")
     # Largest first so the long ones start early.
     pbfs.sort(key=lambda p: -os.path.getsize(p))
     with ProcessPoolExecutor(max_workers=jobs) as pool:
@@ -269,16 +390,40 @@ def load_land():
 
 
 def load_extracted():
+    """Every region's extract, each present and newer than its OSM data: a
+    missing one would render tiles without its lakes, roads and borders.
+    Regions in name order: where features overlap, the order they are drawn
+    in shows in the tiles."""
+    paths = []
+    for name in sorted(region_names()):
+        path = os.path.join(EXTRACTED, name + EXTRACT_SUFFIX)
+        pbf = os.path.join(OSM, name + "-latest.osm.pbf")
+        if not os.path.lexists(path):
+            sys.exit(f"no extract for {name}; run --extract")
+        if os.path.exists(pbf) and os.path.getmtime(path) <= os.path.getmtime(pbf):
+            sys.exit(f"the extract for {name} is older than its OSM data; run --extract")
+        paths.append(path)
+
     from shapely import wkb as shp_wkb
     water, roads, borders = [], [], []
-    for f in sorted(os.listdir(EXTRACTED)):
-        if not f.endswith(".pickle"):
-            continue
-        with open(os.path.join(EXTRACTED, f), "rb") as fh:
-            d = pickle.load(fh)
-        water += [shp_wkb.loads(w) for w in d["water"]]
-        roads += [(c, shp_wkb.loads(g)) for c, g in d["roads"]]
-        borders += [shp_wkb.loads(g) for g in d["borders"]]
+
+    def geometry(blob, section, path):
+        try:
+            g = shp_wkb.loads(blob)
+        except Exception as e:
+            sys.exit(f"{path}: unreadable geometry ({e}); run --extract")
+        if g.is_empty or g.geom_type not in EXTRACT_TYPES[section]:
+            sys.exit(f"{path}: {'an empty' if g.is_empty else 'unexpected'} {g.geom_type} among {section}; run --extract")
+        return g
+
+    for path in paths:
+        try:
+            w, r, b = read_extract(path)
+        except (OSError, ExtractError) as e:
+            sys.exit(f"{path}: {e}; run --extract")
+        water += [geometry(g, "water", path) for g in w]
+        roads += [(c, geometry(g, "roads", path)) for c, g in r]
+        borders += [geometry(g, "borders", path) for g in b]
     return water, roads, borders
 
 

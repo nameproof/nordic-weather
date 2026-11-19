@@ -186,7 +186,7 @@ Scope {
     if (!entry || entry.key !== url || !entry.body) return null
     var memo = parsedMemo[kind]
     if (memo && memo.key === url && memo.body === entry.body) return memo.value
-    var value = kind === "sun" ? Model.parseSun(entry.body)
+    var value = kind === "sun" ? Model.parseSun(entry.body, entry.fetchedMs)
       : kind === "moon" ? Model.parseMoon(entry.body, entry.fetchedMs)
       : Model.parseTimeseries(entry.body)
     var next = Object.assign({}, parsedMemo)
@@ -313,19 +313,23 @@ Scope {
       var parsedBody = null
       if (response.status !== 304) {
         if (kind === "forecast" || kind === "nowcast") parsedBody = Model.parseTimeseries(response.body)
-        else if (kind === "sun") parsedBody = Model.parseSun(response.body)
+        else if (kind === "sun") parsedBody = Model.parseSun(response.body, now)
         else if (kind === "moon") parsedBody = Model.parseMoon(response.body, now)
         else if (kind === "yrObs" || kind === "yrNow") parsedBody = Model.parseTileIndex(response.body, now)
         else if (kind === "lightning") parsedBody = Model.parseLightning(response.body, now)
       }
+      // Checked before anything is stored: what is cached stays usable.
       var unreadable = response.status !== 304 && (parsedBody === null
-        || ((kind === "yrObs" || kind === "yrNow") && !parsedBody.length))
+        || ((kind === "yrObs" || kind === "yrNow") && !parsedBody.length)
+        || ((kind === "forecast" || kind === "nowcast") && !Model.usableTimeseries(kind, parsedBody, now)))
+      var fallbackTtl = kind === "yrObs" || kind === "yrNow" || kind === "lightning" ? 60000
+        : kind === "nowcast" ? 5 * 60000 : kind === "forecast" ? 30 * 60000 : 24 * 3600000
+      var entry = unreadable ? null : Model.cacheEntryFromResponse(entryFor(kind), url, response, now, fallbackTtl)
       if (unreadable) {
         recordFailure(kind, url, "unreadable response")
+      } else if (!entry) {
+        recordFailure(kind, url, "304 without a stored response")
       } else {
-        var fallbackTtl = kind === "yrObs" || kind === "yrNow" || kind === "lightning" ? 60000
-          : kind === "nowcast" ? 5 * 60000 : kind === "forecast" ? 30 * 60000 : 24 * 3600000
-        var entry = Model.cacheEntryFromResponse(entryFor(kind), url, response, now, fallbackTtl)
         if (kind === "lightning") {
           entry.strikes = response.status === 304 ? lightningStrikes : parsedBody
           lightningEntry = entry
@@ -487,7 +491,7 @@ Scope {
   function markWarnChecked(kind, url, now, response) {
     var next = Object.assign({}, warnChecked)
     var expires = Model.parseHttpDateMs(response.headers.expires)
-    next[kind] = { key: url, ms: now, expiresMs: isNaN(expires) ? 0 : expires }
+    next[kind] = { key: url, ms: now, expiresMs: isNaN(expires) ? 0 : Math.min(expires, now + Model.MAX_CACHE_TTL_MS) }
     warnChecked = next
     var cleared = Object.assign({}, failures)
     delete cleared[kind]
@@ -539,9 +543,12 @@ Scope {
     if (response.status === 304 && kind !== "warnFmiAtom") {
       var stored = warnStore[provider]
       var v = warnValidators(response)
-      if (stored && stored.key === url && v.etag && v.etag !== stored.etag)
-        setWarnSource(provider, Object.assign({}, stored, v))
-      markWarnChecked(kind, url, now, response)
+      if (!stored || stored.key !== url) {
+        recordFailure(kind, url, "304 without a stored response")
+      } else {
+        if (v.etag && v.etag !== stored.etag) setWarnSource(provider, Object.assign({}, stored, v))
+        markWarnChecked(kind, url, now, response)
+      }
     } else if (response.status === 200) {
       handleWarningBody(kind, url, now, response)
     } else if (kind === "warnFmiAtom") {
@@ -602,8 +609,7 @@ Scope {
       // The two feeds are published seconds apart: when the Atom feed isn't
       // the publication the RSS listed yet, keep its warnings but not the
       // RSS validators, and look again shortly.
-      var inStep = pending.ids.length === atom.ids.length
-        && pending.ids.every(function(id) { return atom.ids.indexOf(id) >= 0 })
+      var inStep = Model.sameFmiIds(pending.ids, atom.ids)
       setWarnSource("fmi", { key: pending.key, etag: inStep ? pending.etag : "", lastModified: inStep ? pending.lastModified : "",
                              ids: atom.ids, warnings: atom.warnings })
       if (inStep) markWarnChecked("warnFmiRss", pending.key, now, pending.response)
@@ -1160,7 +1166,7 @@ Scope {
     onLoaded: {
       var parsed = null
       try { parsed = JSON.parse(text()) } catch (e) { parsed = null }
-      root.cache = parsed && typeof parsed === "object" ? parsed : ({})
+      root.cache = Model.usableCache(parsed, Date.now())
       root.cacheLoaded = true
       root.rebuild()
       root.maybeFetch(false)
@@ -1294,8 +1300,10 @@ Scope {
     precision: SystemClock.Minutes
     onDateChanged: {
       root.yrClockMs = Date.now()
-      root.rebuild()
+      // Fetching first: a rebuild that fails must not stop the request
+      // that could replace what it failed on.
       root.maybeFetch(false)
+      root.rebuild()
     }
   }
 

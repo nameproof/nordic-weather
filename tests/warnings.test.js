@@ -132,6 +132,68 @@ test("warnings: FMI's Atom feed, land areas in every language", () => {
   assert.equal(M.parseFmiAtom("<rss/>"), null)
 })
 
+test("warnings: inherited names, object-shaped values and oversized FMI feeds", () => {
+  const smhiArea = (code, id) => ({ id, warningLevel: { code }, approximateStart: iso(hours(-1)), approximateEnd: iso(hours(5)),
+    eventDescription: { en: "Gusts" }, area: { type: "Polygon", coordinates: [square] } })
+  const smhi = M.parseSmhiWarnings(JSON.stringify([{ id: { toString: 1 }, event: { code: "WIND" }, warningAreas: [
+    smhiArea("constructor", 1), smhiArea("__proto__", 2), smhiArea({ toString: 1 }, 3), smhiArea("YELLOW", { toString: 1 }),
+    smhiArea("RED", 5)] }]))
+  assert.deepEqual(smhi.warnings.map((w) => [w.id, w.level]), [["smhi::", 1], ["smhi::5", 3]])
+
+  const met = M.parseMetAlerts(JSON.stringify({ features: [
+    { properties: { id: "a", riskMatrixColor: "constructor", geographicDomain: "land" } },
+    { properties: { id: "b", riskMatrixColor: { toString: 1 }, awareness_level: "2; yellow; Moderate", geographicDomain: "land",
+      eventAwarenessName: { toString: 1 }, description: "Glatt.", eventEndingTime: { toString: 1 } } }] }), "en")
+  assert.deepEqual(met.warnings.map((w) => [w.id, w.level, w.title.en, w.endMs]), [["met:b", 1, "Glatt.", null]])
+
+  const fmi = M.parseFmiAtom(atom([
+    entry("urn:a", "Alert", capInfo("constructor", "orange", landArea("Oulu"))),
+    entry("urn:b", "Alert", capInfo("en-GB", "constructor", landArea("Oulu"))),
+    entry("urn:c", "Alert", capInfo("en-GB", "toString", landArea("Oulu")) + capInfo("sv-FI", "red", landArea("Oulu")))
+  ]))
+  assert.deepEqual(fmi.warnings.map((w) => [w.id, w.level, Object.keys(w.title)]), [["fmi:urn:c", 3, ["en", "sv"]]])
+
+  // A feed far past what FMI publishes, cut off, or with an overlong id is
+  // unreadable rather than slow or empty.
+  const many = Array.from({ length: M.MAX_FMI_ENTRIES + 1 }, (_, i) => rssItem("x", "urn:" + i))
+  assert.equal(M.parseFmiRss(rss(many)), null)
+  assert.equal(M.parseFmiAtom(atom(Array.from({ length: M.MAX_FMI_ENTRIES + 1 }, (_, i) => entry("urn:" + i, "Alert", "")))), null)
+  const whole = rss([rssItem("Yellow wind warning for sea area: Gulf of Finland", "urn:1")])
+  assert.equal(M.parseFmiRss(whole.slice(0, -"</rss>".length)), null)
+  assert.equal(M.parseFmiRss(whole.slice(0, whole.indexOf("</item>"))), null)
+  const feed = atom([entry("urn:land", "Alert", capInfo("en-GB", "orange", landArea("Oulu")))])
+  assert.equal(M.parseFmiAtom(feed.slice(0, -10)), null)
+  assert.equal(M.parseFmiRss(rss([rssItem("x", "u".repeat(257))])), null)
+  assert.equal(M.parseFmiAtom(atom([entry("u".repeat(257), "Alert", "")])), null)
+  // A feed with an item or entry left open, or a provider list holding
+  // something other than warnings, is malformed rather than empty.
+  assert.equal(M.parseFmiRss(rss(["<item><guid>u</guid>"])), null)
+  assert.equal(M.parseFmiAtom(atom([entry("urn:a", "Alert", "<info><language>en-GB</language>")])), null)
+  assert.equal(M.parseSmhiWarnings("[null]"), null)
+  assert.equal(M.parseMetAlerts('{"features":[null]}', "en"), null)
+  // A self-closing element is empty, not paired with a later closing tag.
+  const selfClosing = atom([entry("urn:s", "Alert", capInfo("en-GB", "orange",
+    '<area><areaDesc>Oulu</areaDesc><polygon /></area>' + landArea("Kemi")))])
+  assert.deepEqual(M.parseFmiAtom(selfClosing).warnings[0].areas.map((a) => a.name.en), ["Kemi"])
+  // CDATA is unwrapped in one pass; an unclosed section stays as text.
+  assert.deepEqual(M.parseFmiRss(rss([rssItem("<![CDATA[Gale & rain]]>", "<![CDATA[urn:9]]>")])).ids, ["urn:9"])
+  assert.deepEqual(M.parseFmiRss(rss([rssItem("x", "a<![CDATA[b")])).ids, ["a<![CDATA[b"])
+  // Hostile shapes at the response size limit parse in one pass.
+  const started = Date.now()
+  for (const body of [rss(["<item><title>x</title>".repeat(360000)]), rss(["<item <".repeat(1000000)]),
+    atom(["<entry><alert>".repeat(500000)]), rss(["<item ".repeat(1300000)]),
+    rss([rssItem("<![CDATA[".repeat(900000), "u")])])
+    assert.ok(M.parseFmiRss(body) !== undefined && M.parseFmiAtom(body) !== undefined)
+  assert.ok(Date.now() - started < 2000, "took " + (Date.now() - started) + " ms")
+  // The two feeds agree only on the same ids, each as often.
+  assert.ok(M.sameFmiIds(["a", "b"], ["b", "a"]))
+  assert.ok(!M.sameFmiIds(["a", "a"], ["a", "b"]))
+  assert.ok(!M.sameFmiIds(["a", "b"], ["a", "a"]))
+  assert.ok(!M.sameFmiIds(["a"], ["a", "b"]))
+  assert.ok(!M.sameFmiIds(["constructor"], ["x"]))
+  assert.ok(!M.sameFmiIds([{ toString: 1 }], [{ toString: 1 }]))
+})
+
 test("warnings: the band's rows, worst first, ended ones gone", () => {
   const warning = (id, level, start, end) => ({ id, level, title: { sv: "Titel " + id, en: "Title " + id },
     advice: { sv: "Råd" }, startMs: start, endMs: end, areas: [{ name: { sv: "Område" }, polygons: [[square.flat()]] }] })
@@ -163,6 +225,29 @@ test("warnings: the stored sources survive a round trip; other versions are igno
   assert.deepEqual(M.parseWarningStore(JSON.stringify({ version: 0, sources })), {})
   assert.deepEqual(M.parseWarningStore(JSON.stringify({ version: 1, sources: { smhi: { key: 1 }, x: {} } })), {})
   assert.deepEqual(M.parseWarningStore("nope"), {})
+  // A source holding a warning of any other shape, or malformed fields, is
+  // left out whole, validators included, so it is fetched again in full.
+  const ring = [12.3, 57.8, 12.8, 57.8, 12.8, 58.1, 12.3, 57.8]
+  const ok = { id: "smhi:1:2", level: 2, title: { sv: "Vind" }, advice: {}, startMs: null, endMs: hours(5),
+    areas: [{ name: { sv: "Län" }, polygons: [[ring]] }] }
+  const stored = (warnings, extra) => M.warningStoreText({ smhi: Object.assign({ key: "k", etag: "", lastModified: "", warnings }, extra) })
+  assert.deepEqual(M.parseWarningStore(stored([ok, { ...ok, title: { sv: { toString: 1 }, __proto__: "x" } }])).smhi.warnings,
+    [ok, { ...ok, title: {} }])
+  for (const bad of [null, 7, { ...ok, level: "2" }, { ...ok, level: 4 }, { ...ok, id: { toString: 1 } }, { ...ok, startMs: "now" },
+    { ...ok, areas: [{ name: {}, polygons: [[[1, 2, "3", 4, 5, 6, 7, 8]]] }] }, { ...ok, areas: [{ name: {}, polygons: [[[1, 2]]] }] },
+    { ...ok, areas: null }, { ...ok, endMs: 1e20 }, { ...ok, startMs: -5 }])
+    assert.deepEqual(M.parseWarningStore(stored([ok, bad])), {}, JSON.stringify(bad))
+  // Each provider has its own vertex budget, as when its feed was parsed:
+  // two large stored sources both come back.
+  const big = (n) => { const r = []; for (let i = 0; i < n; i++) r.push(12 + i / n, 57 + i / n); return r }
+  const large = { ...ok, areas: [{ name: {}, polygons: [[big(300000)]] }] }
+  const both = M.parseWarningStore(M.warningStoreText({ smhi: { key: "s", etag: "", lastModified: "", warnings: [large] },
+    fmi: { key: "f", etag: "", lastModified: "", ids: [], warnings: [{ ...large, id: "fmi:x" }] } }))
+  assert.deepEqual(Object.keys(both).sort(), ["fmi", "smhi"])
+  assert.deepEqual(M.parseWarningStore(stored([ok], { etag: 5 })), {})
+  assert.deepEqual(M.parseWarningStore(stored([ok], { ids: [{ toString: 1 }] })), {})
+  const rows = M.buildWarnings({ sources: M.parseWarningStore(stored([ok])), providers: ["smhi"], latitude: 57.93, longitude: 12.53 }, NOW, "sv")
+  assert.deepEqual(rows.map((r) => r.id), ["smhi:1:2"])
 })
 
 test("warnings: conditional requests and their services", () => {

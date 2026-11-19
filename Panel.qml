@@ -744,46 +744,226 @@ Panel {
                 visible: root.editingLocation
                 spacing: Style.space(6)
 
-                // The field exists only while editing. Qt's text inputs
-                // check the clipboard whenever it changes (on Wayland also
-                // when the shell gains keyboard focus, as when this panel
-                // opens), and through Qt 6.12.0 that check reads the whole
-                // clipboard on the GUI thread, so a stalled clipboard owner
-                // would freeze the shell.
+                // The field exists only while editing, and is a TextEdit
+                // kept to one line rather than a TextField: through Qt 6.12.0
+                // a TextInput (behind every TextField) reads the whole
+                // clipboard on the GUI thread whenever it changes, to see if
+                // paste is possible, so a stalled clipboard owner would
+                // freeze the shell. TextEdit only checks the offered formats
+                // and reads the clipboard when the user pastes.
                 Loader {
                   id: locationLoader
                   active: root.editingLocation
-                  sourceComponent: TextField {
+                  sourceComponent: FocusScope {
+                    id: locationField
+                    property alias text: locationEdit.text
+                    readonly property bool hot: locationHover.hovered
+                    readonly property var borderSpec: Border.controlSpec(locationEdit.activeFocus ? "focus" : (hot ? "hover-cursor" : "normal"),
+                                                                         root.fg, Color.accent)
                     width: Style.space(210)
+                    implicitHeight: locationEdit.implicitHeight + 2 * Style.spacing.inputPaddingY
+                                    + Border.top(borderSpec) + Border.bottom(borderSpec)
                     enabled: !root.savingLocation
-                    maximumLength: Model.MAX_SEARCH_LENGTH
-                    placeholderText: root.t.searchPlaceholder
-                    foreground: root.fg
-                    font.family: root.fontFamily
-                    onTextChanged: {
-                      root.searchText = text
-                      if (root.editingLocation && !root.savingLocation) geocodeDebounce.restart()
+
+                    BorderSurface {
+                      anchors.fill: parent
+                      color: Style.controlFill(locationEdit.activeFocus, locationField.hot, root.fg, Color.accent)
+                      borderSpec: locationField.borderSpec
+                      radius: Style.cornerRadius
                     }
-                    Keys.onPressed: function(event) {
-                      if (event.key === Qt.Key_Escape) {
-                        if (root.hasLocation) root.cancelEditingLocation()
-                        else root.close()
-                        event.accepted = true
-                      } else if (event.key === Qt.Key_Down) {
-                        if (root.suggestionIndex < root.dropdownRows.length - 1) root.suggestionIndex++
-                        event.accepted = true
-                      } else if (event.key === Qt.Key_Delete && root.showingFavorites) {
-                        var row = root.dropdownRows[root.suggestionIndex]
-                        if (row && root.service) root.service.removeFavorite(row.placeKey)
-                        root.suggestionIndex = Math.max(0, Math.min(root.suggestionIndex, root.dropdownRows.length - 2))
-                        event.accepted = true
-                      } else if (event.key === Qt.Key_Up) {
-                        if (root.suggestionIndex > 0) root.suggestionIndex--
-                        event.accepted = true
-                      } else if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
-                        root.commitLocation()
-                        event.accepted = true
+                    HoverHandler {
+                      id: locationHover
+                      cursorShape: Qt.IBeamCursor
+                    }
+                    // A click on the padding focuses the field too.
+                    TapHandler { onTapped: locationEdit.forceActiveFocus() }
+                    // Scrolls sideways to keep the cursor in view.
+                    Flickable {
+                      id: locationFlick
+                      anchors.fill: parent
+                      anchors.leftMargin: Style.spacing.controlPaddingX + Border.left(locationField.borderSpec)
+                      anchors.rightMargin: Style.spacing.controlPaddingX + Border.right(locationField.borderSpec)
+                      anchors.topMargin: Style.spacing.inputPaddingY + Border.top(locationField.borderSpec)
+                      anchors.bottomMargin: Style.spacing.inputPaddingY + Border.bottom(locationField.borderSpec)
+                      contentWidth: locationEdit.contentWidth
+                      contentHeight: height
+                      flickableDirection: Flickable.HorizontalFlick
+                      interactive: false
+                      clip: true
+
+                      TextEdit {
+                        id: locationEdit
+                        width: Math.max(locationFlick.width, contentWidth)
+                        height: locationFlick.height
+                        focus: true
+                        textFormat: TextEdit.PlainText
+                        wrapMode: TextEdit.NoWrap
+                        verticalAlignment: TextEdit.AlignVCenter
+                        selectByMouse: true
+                        color: root.fg
+                        selectionColor: Style.selectionFillFor(root.fg, Color.accent)
+                        selectedTextColor: root.fg
+                        font.family: root.fontFamily
+                        font.pixelSize: Style.font.body
+                        onCursorRectangleChanged: {
+                          var r = cursorRectangle
+                          if (r.x < locationFlick.contentX) locationFlick.contentX = r.x
+                          else if (r.x + r.width > locationFlick.contentX + locationFlick.width)
+                            locationFlick.contentX = r.x + r.width - locationFlick.width
+                        }
+                        Accessible.name: root.t.searchPlaceholder
+                        // One line, at most the search length, as a TextField
+                        // with maximumLength. Paste (pasteOneLine) cleans the
+                        // text before inserting it, as one edit. Anything
+                        // else that brings in more (middle-click, a drop) is
+                        // tidied here: what came in past the limit is dropped
+                        // (it ends at the cursor), then line breaks and tabs
+                        // become spaces. Edited in place, not by assigning
+                        // text, which would clear the undo history; Ctrl+Z
+                        // takes back the tidying edits with the change, and
+                        // redo puts them back together.
+                        property bool tidying: false
+                        property int tidyEdits: 0
+                        property int redoEdits: 0
+                        function searchChanged() {
+                          root.searchText = text
+                          if (root.editingLocation && !root.savingLocation) geocodeDebounce.restart()
+                        }
+                        onTextChanged: {
+                          if (tidying) return
+                          tidying = true
+                          var edits = 0
+                          var excess = length - Model.MAX_SEARCH_LENGTH
+                          if (excess > 0) {
+                            var end = Math.max(excess, cursorPosition)
+                            remove(end - excess, end)
+                            edits++
+                          }
+                          var breaks = /[\t\r\n\u2028\u2029]/g, m
+                          while ((m = breaks.exec(text)) !== null) {
+                            remove(m.index, m.index + 1)
+                            insert(m.index, " ")
+                            edits += 2
+                          }
+                          tidyEdits = edits
+                          redoEdits = 0
+                          tidying = false
+                          searchChanged()
+                        }
+                        // The clipboard's text, seen first through a hidden
+                        // editor (QML has no clipboard reading of its own).
+                        // One line that fits is pasted as TextEdit does it,
+                        // one edit; anything else is made one line and cut
+                        // to the room left, replacing the selection.
+                        function pasteOneLine() {
+                          pasteBuffer.clear()
+                          pasteBuffer.paste()
+                          var raw = pasteBuffer.text
+                          pasteBuffer.clear()
+                          var start = selectionStart, end = selectionEnd
+                          var room = Math.max(0, Model.MAX_SEARCH_LENGTH - (length - (end - start)))
+                          if (raw.length <= room && !/[\t\r\n\u2028\u2029]/.test(raw)) {
+                            paste()
+                            return
+                          }
+                          var pasted = raw.slice(0, room).replace(/[\t\r\n\u2028\u2029]/g, " ")
+                          if (pasted === "" && start === end) return
+                          tidying = true
+                          var edits = 0
+                          if (end > start) { remove(start, end); edits++ }
+                          if (pasted !== "") { insert(start, pasted); edits++ }
+                          cursorPosition = start + pasted.length
+                          tidyEdits = edits - 1
+                          redoEdits = 0
+                          tidying = false
+                          searchChanged()
+                        }
+                        function undoTidied() {
+                          var before = text
+                          tidying = true
+                          var undone = 0
+                          for (; undone <= tidyEdits && canUndo; undone++) undo()
+                          // A refused keystroke changed nothing: undo the
+                          // edit before it, as the user expects (and redo
+                          // only that one).
+                          if (text === before && canUndo) {
+                            undo()
+                            undone = 0
+                          }
+                          redoEdits = undone
+                          tidyEdits = 0
+                          tidying = false
+                          searchChanged()
+                        }
+                        function redoTidied() {
+                          tidying = true
+                          var redone = 0
+                          for (; redone < redoEdits && canRedo; redone++) redo()
+                          tidyEdits = redone - 1
+                          redoEdits = 0
+                          tidying = false
+                          searchChanged()
+                        }
+                        Keys.onPressed: function(event) {
+                          // Grouping covers the step right after a tidied
+                          // change or its undo; a plain undo or redo in
+                          // between leaves the rest to TextEdit, one step
+                          // at a time.
+                          if (event.matches(StandardKey.Undo)) {
+                            if (tidyEdits > 0) {
+                              undoTidied()
+                              event.accepted = true
+                            } else {
+                              redoEdits = 0
+                            }
+                          } else if (event.matches(StandardKey.Redo)) {
+                            if (redoEdits > 1) {
+                              redoTidied()
+                              event.accepted = true
+                            } else {
+                              redoEdits = 0
+                              tidyEdits = 0
+                            }
+                          } else if (event.matches(StandardKey.Paste)) {
+                            pasteOneLine()
+                            event.accepted = true
+                          } else if (event.key === Qt.Key_Escape) {
+                            if (root.hasLocation) root.cancelEditingLocation()
+                            else root.close()
+                            event.accepted = true
+                          } else if (event.key === Qt.Key_Down) {
+                            if (root.suggestionIndex < root.dropdownRows.length - 1) root.suggestionIndex++
+                            event.accepted = true
+                          } else if (event.key === Qt.Key_Delete && root.showingFavorites) {
+                            var row = root.dropdownRows[root.suggestionIndex]
+                            if (row && root.service) root.service.removeFavorite(row.placeKey)
+                            root.suggestionIndex = Math.max(0, Math.min(root.suggestionIndex, root.dropdownRows.length - 2))
+                            event.accepted = true
+                          } else if (event.key === Qt.Key_Up) {
+                            if (root.suggestionIndex > 0) root.suggestionIndex--
+                            event.accepted = true
+                          } else if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
+                            root.commitLocation()
+                            event.accepted = true
+                          } else if (event.key === Qt.Key_Tab || event.key === Qt.Key_Backtab) {
+                            event.accepted = true
+                          }
+                        }
                       }
+                    }
+                    TextEdit {
+                      id: pasteBuffer
+                      visible: false
+                      textFormat: TextEdit.PlainText
+                    }
+                    Text {
+                      x: locationFlick.x
+                      anchors.verticalCenter: parent.verticalCenter
+                      visible: locationEdit.text === "" && locationEdit.preeditText === ""
+                      textFormat: Text.PlainText
+                      text: root.t.searchPlaceholder
+                      color: Qt.darker(root.fg, 1.6)
+                      font: locationEdit.font
                     }
                   }
                 }

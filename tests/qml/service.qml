@@ -1,6 +1,7 @@
 import QtQuick
 import Quickshell
 import "." as Weather
+import "Model.js" as Model
 
 Scope {
   id: test
@@ -84,6 +85,58 @@ Scope {
       check(service.cache[kind].body === bodies[kind], kind + ": 304 keeps validated data")
       check(!service.failures[kind], kind + ": successful refresh clears failures")
     }
+    // Forecast and nowcast: only usable bodies replace what is stored, and
+    // a later good response recovers.
+    var hour = 3600000, t0 = Math.floor(Date.now() / hour) * hour
+    // Forecasts in hours, nowcasts (meta given) in 5-minute steps from now.
+    var series = function(count, details, symbol, meta) {
+      var step = meta ? 300000 : hour, start = meta ? Math.floor(Date.now() / step) * step : t0
+      var steps = []
+      for (var s = 0; s < count; s++) steps.push({ time: new Date(start + s * step).toISOString(), data: {
+        instant: { details: details }, next_1_hours: { summary: { symbol_code: symbol }, details: {} } } })
+      return JSON.stringify({ properties: { meta: meta || {}, timeseries: steps } })
+    }
+    var timeseries = {
+      forecast: [series(6, { air_temperature: 4 }, "cloudy"), series(6, { air_temperature: 7 }, "rain\u2028_day")],
+      nowcast: [series(4, { precipitation_rate: 0 }, "cloudy", { radar_coverage: "ok" }),
+                series(4, { precipitation_rate: 0.4 }, "rain", { radar_coverage: "ok" })]
+    }
+    var unusable = {
+      forecast: ['{"properties":{"timeseries":[]}}', series(3, {}, "cloudy")],
+      nowcast: [series(4, {}, "cloudy", { radar_coverage: "ok" }), series(4, { precipitation_rate: 0 }, "cloudy", {})]
+    }
+    for (var tk in timeseries) {
+      service.handleResponse(tk, urls[tk], ok + timeseries[tk][0])
+      var stored = service.cache[tk]
+      check(stored && stored.body === timeseries[tk][0], tk + ": usable response is cached")
+      for (var u = 0; u < unusable[tk].length; u++) {
+        service.handleResponse(tk, urls[tk], ok + unusable[tk][u])
+        check(service.cache[tk] === stored, tk + ": unusable response must preserve good cache")
+        check(service.failures[tk].count > 0, tk + ": unusable response backs off")
+      }
+      check(service.view.ready, tk + ": the view stays ready")
+      service.cache = Object.assign({}, service.cache, (function() { var o = {}; o[tk] = undefined; return o })())
+      service.failures = ({})
+      service.handleResponse(tk, urls[tk], "HTTP/2 304\r\n\r\n")
+      check(service.cache[tk] === undefined && service.failures[tk].count > 0, tk + ": 304 with nothing stored is a failure")
+      service.handleResponse(tk, urls[tk], ok + timeseries[tk][1])
+      check(service.cache[tk].body === timeseries[tk][1] && !service.failures[tk], tk + ": a later usable response recovers")
+    }
+    check(service.view.ready && typeof service.view.current.description === "string", "a line separator in a symbol is harmless")
+    // A warning 304 with nothing stored for the request is a failure, and no
+    // Expires holds off the next check for more than a day.
+    service.warnStore = ({})
+    service.failures = ({})
+    service.handleWarningResponse("warnSmhi", Model.SMHI_WARNINGS_URL, "HTTP/2 304\r\nexpires: Fri, 31 Dec 9999 23:59:59 GMT\r\n\r\n")
+    check(service.failures.warnSmhi && !service.warnChecked.warnSmhi, "warning 304 without a stored source is a failure")
+    service.warnStore = ({ smhi: { key: Model.SMHI_WARNINGS_URL, etag: "", lastModified: "", warnings: [] } })
+    service.handleWarningResponse("warnSmhi", Model.SMHI_WARNINGS_URL, "HTTP/2 304\r\nexpires: Fri, 31 Dec 2099 23:59:59 GMT\r\n\r\n")
+    check(service.warnChecked.warnSmhi && service.warnChecked.warnSmhi.expiresMs <= Date.now() + 24 * 3600000 + 1000,
+          "warning checks expire within a day")
+    service.warnStore = ({})
+    service.warnChecked = ({})
+    service.cache = {}
+
     var events = []
     for (var i = 0; i < 12000; i++) events.push([Date.now() / 1000 - i / 2, 12, 58])
     var lightningBody = JSON.stringify({ historicalData: JSON.stringify(events) })

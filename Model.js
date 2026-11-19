@@ -377,6 +377,27 @@ function isNum(value) {
   return typeof value === "number" && isFinite(value)
 }
 
+// A table's own entry for a key from provider data: "constructor" or
+// "__proto__" must not reach Object.prototype.
+function ownValue(table, key) {
+  return Object.prototype.hasOwnProperty.call(table, key) ? table[key] : undefined
+}
+
+// A provider value as text: strings as they are, finite numbers in decimal,
+// anything else "". String() itself can throw on an object.
+function scalarText(value) {
+  return typeof value === "string" ? value : isNum(value) ? String(value) : ""
+}
+
+// A time in this century: dates from providers and stored timestamps
+// outside it are unreadable (a year far off makes Date methods misbehave).
+var EARLIEST_MS = Date.UTC(2000, 0, 1)
+var LATEST_MS = Date.UTC(2100, 0, 1)
+
+function plausibleTime(ms) {
+  return isNum(ms) && ms >= EARLIEST_MS && ms < LATEST_MS
+}
+
 function formatNumber(value, decimals, lang) {
   if (!isNum(value)) return ""
   var s = String(parseFloat(value.toFixed(decimals)))
@@ -395,23 +416,30 @@ function pad2(n) {
 
 // ISO 8601 as the APIs send it: "2026-09-26T12:00:00Z", "2026-09-26T07:02+02:00".
 function parseIsoMs(value) {
-  var m = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2}))?(?:\.\d+)?(Z|[+-]\d{2}:\d{2})$/.exec(String(value || ""))
+  var m = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2}))?(?:\.\d+)?(Z|[+-]\d{2}:\d{2})$/.exec(scalarText(value))
   if (!m) return NaN
+  // Out-of-range parts ("02-31", "25:00") would roll over into another
+  // time, so they make the value unreadable instead.
+  var day = new Date(Date.UTC(+m[1], +m[2] - 1, +m[3]))
+  if (day.getUTCMonth() !== +m[2] - 1 || day.getUTCDate() !== +m[3] || +m[4] > 23 || +m[5] > 59 || +(m[6] || 0) > 59)
+    return NaN
   var ms = Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +(m[6] || 0))
   if (m[7] !== "Z") {
-    var sign = m[7][0] === "-" ? -1 : 1
-    ms -= sign * (parseInt(m[7].slice(1, 3), 10) * 60 + parseInt(m[7].slice(4, 6), 10)) * 60000
+    var offH = parseInt(m[7].slice(1, 3), 10), offM = parseInt(m[7].slice(4, 6), 10)
+    if (offH > 23 || offM > 59) return NaN
+    ms -= (m[7][0] === "-" ? -1 : 1) * (offH * 60 + offM) * 60000
   }
-  return ms
+  return plausibleTime(ms) ? ms : NaN
 }
 
 // RFC 1123 dates from HTTP headers: "Sat, 26 Sep 2026 13:14:28 GMT".
 function parseHttpDateMs(value) {
-  var m = /(\d{1,2}) (\w{3}) (\d{4}) (\d{2}):(\d{2}):(\d{2})/.exec(String(value || ""))
+  var m = /(\d{1,2}) (\w{3}) (\d{4}) (\d{2}):(\d{2}):(\d{2})/.exec(scalarText(value))
   if (!m) return NaN
   var month = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"].indexOf(m[2])
   if (month < 0) return NaN
-  return Date.UTC(+m[3], month, +m[1], +m[4], +m[5], +m[6])
+  var ms = Date.UTC(+m[3], month, +m[1], +m[4], +m[5], +m[6])
+  return plausibleTime(ms) ? ms : NaN
 }
 
 function localDateKey(ms) {
@@ -476,8 +504,13 @@ function coordQuery(location) {
 
 function forecastUrl(location) {
   var url = MET_BASE + "/locationforecast/2.0/complete?" + coordQuery(location)
-  if (isNum(location.elevation)) url += "&altitude=" + Math.round(location.elevation)
+  if (plausibleElevation(location.elevation)) url += "&altitude=" + Math.round(location.elevation)
   return url
+}
+
+// Metres above sea level that exist on Earth; anything else is not sent.
+function plausibleElevation(value) {
+  return isNum(value) && value >= -500 && value <= 9000
 }
 
 function nowcastUrl(location) {
@@ -495,7 +528,7 @@ function moonUrl(location, ms) {
 }
 
 // Place search text as sent: trimmed, at most MAX_SEARCH_LENGTH UTF-16
-// units (the unit of the field's maximumLength; place names are far
+// units (the unit the location field counts in; place names are far
 // shorter), and well-formed, since encodeURIComponent throws on a lone
 // surrogate (one half of a pair cut at the limit, or malformed input).
 var MAX_SEARCH_LENGTH = 100
@@ -553,10 +586,11 @@ function requestService(kind) {
 }
 
 // argv for one request. `-D -` puts the response headers ahead of the body
-// on stdout so Expires / Last-Modified / ETag reach parseHttpResponse. With
-// both validators the server goes by the ETag (RFC 9110).
+// on stdout so Expires / Last-Modified / ETag reach parseHttpResponse; a
+// proxy's CONNECT reply is left out of them. With both validators the
+// server goes by the ETag (RFC 9110).
 function curlCommand(url, lastModified, maxTime, agent, etag) {
-  var args = ["-sS", "--compressed", "--max-time", String(maxTime || 10), "-A", agent, "-D", "-"]
+  var args = ["-sS", "--compressed", "--max-time", String(maxTime || 10), "-A", agent, "-D", "-", "--suppress-connect-headers"]
   if (etag) args.push("-H", "If-None-Match: " + etag)
   if (lastModified) args.push("-H", "If-Modified-Since: " + lastModified)
   args.push("--url", url)
@@ -568,11 +602,14 @@ function geocodeCommand(query, lang, agent) {
   return cappedCurl(["-fsS", "--max-time", "5", "-A", agent, "--url", geocodeUrl(query, lang)])
 }
 
+// curl's -D - output → { status, headers, body }. Interim 1xx header blocks
+// come before the response's own (curlCommand leaves out a proxy's CONNECT
+// reply); everything after those is body, even if it looks like headers.
 function parseHttpResponse(raw) {
   var rest = String(raw || "")
   var result = { status: 0, headers: {}, body: "" }
-  // Skip interim/redirect header blocks; the last block belongs to the body.
-  while (/^HTTP\/[\d.]+ \d{3}/.test(rest)) {
+  var more = true
+  while (more && /^HTTP\/[\d.]+ \d{3}/.test(rest)) {
     var sep = rest.indexOf("\r\n\r\n")
     var sepLen = 4
     if (sep < 0) { sep = rest.indexOf("\n\n"); sepLen = 2 }
@@ -580,6 +617,7 @@ function parseHttpResponse(raw) {
     rest = sep < 0 ? "" : rest.slice(sep + sepLen)
     var lines = block.split(/\r?\n/)
     result.status = parseInt(/^HTTP\/[\d.]+ (\d{3})/.exec(lines[0])[1], 10)
+    more = result.status < 200
     result.headers = {}
     for (var i = 1; i < lines.length; i++) {
       var colon = lines[i].indexOf(":")
@@ -598,15 +636,60 @@ function isFresh(entry, key, nowMs) {
   return !!entry && entry.key === key && isNum(entry.expiresMs) && nowMs < entry.expiresMs
 }
 
+// Null for a 304 without a stored entry for the same key to renew. An
+// Expires further ahead than MAX_CACHE_TTL_MS is cut to it, so one response
+// cannot stop refreshes.
+var MAX_CACHE_TTL_MS = 24 * 3600000
+
 function cacheEntryFromResponse(previous, key, response, nowMs, fallbackTtlMs) {
   var expires = parseHttpDateMs(response.headers.expires)
   if (!isNum(expires)) expires = nowMs + (fallbackTtlMs || 30 * 60000)
-  if (response.status === 304 && previous && previous.key === key) {
+  expires = Math.min(expires, nowMs + MAX_CACHE_TTL_MS)
+  if (response.status === 304) {
+    if (!previous || previous.key !== key) return null
     return { key: key, body: previous.body, lastModified: previous.lastModified,
              expiresMs: expires, fetchedMs: nowMs }
   }
   return { key: key, body: response.body, lastModified: response.headers["last-modified"] || "",
            expiresMs: expires, fetchedMs: nowMs }
+}
+
+// cache.json as loaded: what is kept is as the service itself stores it.
+// A response entry needs its fields and a body that still reads as usable
+// (an empty nowcast body records a place outside the radar area, HTTP 422);
+// anything else is dropped and fetched again. Unknown keys go too.
+var CACHE_RESPONSE_KINDS = ["forecast", "nowcast", "sun", "moon", "yrObs", "yrNow"]
+
+function usableCacheEntry(kind, entry, nowMs) {
+  if (!entry || typeof entry !== "object" || typeof entry.key !== "string" || typeof entry.body !== "string"
+      || !plausibleTime(entry.expiresMs) || !plausibleTime(entry.fetchedMs)
+      || (entry.lastModified !== undefined && typeof entry.lastModified !== "string")) return false
+  if (kind === "nowcast" && entry.body === "") return true
+  if (kind === "forecast" || kind === "nowcast") return usableTimeseries(kind, parseTimeseries(entry.body), nowMs)
+  if (kind === "sun") return parseSun(entry.body, entry.fetchedMs) !== null
+  if (kind === "moon") return parseMoon(entry.body, entry.fetchedMs) !== null
+  return parseTileIndex(entry.body, nowMs).length > 0
+}
+
+function usableCache(parsed, nowMs) {
+  var out = {}
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return out
+  for (var i = 0; i < CACHE_RESPONSE_KINDS.length; i++) {
+    var kind = CACHE_RESPONSE_KINDS[i]
+    var entry = ownValue(parsed, kind)
+    if (usableCacheEntry(kind, entry, nowMs))
+      out[kind] = { key: entry.key, body: entry.body, lastModified: entry.lastModified || "",
+                    expiresMs: entry.expiresMs, fetchedMs: entry.fetchedMs }
+  }
+  var elevations = ownValue(parsed, "elevations")
+  if (elevations && typeof elevations === "object" && !Array.isArray(elevations)) {
+    out.elevations = {}
+    for (var place in elevations)
+      if (place !== "__proto__" && place.length <= 64 && plausibleElevation(elevations[place])) out.elevations[place] = elevations[place]
+  }
+  var prefs = ownValue(parsed, "prefs")
+  if (prefs && typeof prefs === "object" && !Array.isArray(prefs) && isNum(prefs.mapStep)) out.prefs = { mapStep: prefs.mapStep }
+  return out
 }
 
 // MET asks clients not to fire in sync; spread refreshes out a little.
@@ -619,8 +702,8 @@ function jitterMs(random) {
 // MET symbol codes are "<base>[_day|_night|_polartwilight]". Two bases are
 // misspelled in the API itself ("lightssleet…", "lightssnow…").
 function splitSymbol(code) {
-  var s = String(code || "")
-  var m = /^(.*?)(?:_(day|night|polartwilight))?$/.exec(s)
+  var s = scalarText(code)
+  var m = /^([\s\S]*?)(?:_(day|night|polartwilight))?$/.exec(s)
   var base = m[1].replace(/^lights(?=s)/, "light")
   return { base: base, variant: m[2] || "" }
 }
@@ -634,7 +717,8 @@ function parsePrecipBase(base) {
 function describeSymbol(code, lang) {
   var s = strings(lang)
   var base = splitSymbol(code).base
-  if (s.symbols[base]) return s.symbols[base]
+  var name = ownValue(s.symbols, base)
+  if (name) return name
   var p = parsePrecipBase(base)
   if (!p) return base ? base.charAt(0).toUpperCase() + base.slice(1) : ""
 
@@ -799,16 +883,22 @@ var MAX_TIMESERIES_STEPS = 256
 var MAX_PLACE_NAME_CHARS = 256
 var MAX_GEOCODE_RESULTS = 6
 
+// Control characters and the Unicode line and paragraph separators (which
+// a regex "." does not match) become spaces.
 function boundedText(value, max) {
-  return typeof value === "string" ? value.slice(0, max).replace(/[\x00-\x1f\x7f]/g, " ").trim() : ""
+  return typeof value === "string" ? value.slice(0, max).replace(/[\x00-\x1f\x7f\u2028\u2029]/g, " ").trim() : ""
 }
+
+// Larger than any weather measurement: past it, arithmetic on the values
+// (interpolation, ranges) could overflow to Infinity or NaN.
+var MAX_MEASUREMENT = 1e6
 
 // Keep scalar weather measurements, never arbitrary nested API objects.
 function numericDetails(details) {
   var out = {}, count = 0
   if (!details || typeof details !== "object" || Array.isArray(details)) return out
   for (var key in details) {
-    if (key.length > 64 || !isNum(details[key])) continue
+    if (key.length > 64 || !isNum(details[key]) || Math.abs(details[key]) > MAX_MEASUREMENT) continue
     out[key] = details[key]
     if (++count >= 32) break
   }
@@ -848,6 +938,31 @@ function parseTimeseries(text) {
   var meta = data.properties.meta || {}
   return { updatedMs: parseIsoMs(boundedText(meta.updated_at, 64)), steps: steps,
            meta: { radar_coverage: boundedText(meta.radar_coverage, 64) } }
+}
+
+// Whether a parsed forecast or nowcast says enough at nowMs to replace what
+// is stored. A forecast's nearest step (the one the hero shows) needs a
+// temperature and to be within three hours of now. A nowcast with radar
+// coverage needs at least two steps from now on (as buildNowcast), starting
+// about now and none beyond three hours, each with a precipitation rate,
+// since a missing one would read as dry; MET's two other coverage states
+// carry no rates and are shown as such.
+var NOWCAST_COVERAGE = ["ok", "temporarily unavailable", "no coverage"]
+
+function usableTimeseries(kind, parsed, nowMs) {
+  if (!parsed || !Array.isArray(parsed.steps) || !isNum(nowMs)) return false
+  if (kind === "forecast") {
+    var nearest = nearestStep(parsed.steps, nowMs)
+    return !!nearest && isNum(nearest.instant.air_temperature) && Math.abs(nearest.ms - nowMs) <= 3 * HOUR_MS
+  }
+  if (kind !== "nowcast") return false
+  var coverage = parsed.meta ? parsed.meta.radar_coverage : ""
+  if (NOWCAST_COVERAGE.indexOf(coverage) < 0) return false
+  if (coverage !== "ok") return true
+  // The radar's next two hours or so: from about now, nothing far ahead.
+  var ahead = parsed.steps.filter(function(s) { return s.ms >= nowMs - 5 * 60000 })
+  return ahead.length >= 2 && ahead[0].ms <= nowMs + 30 * 60000
+    && ahead.every(function(s) { return isNum(s.instant.precipitation_rate) && s.ms <= nowMs + 3 * HOUR_MS })
 }
 
 function periodOf(block, hours) {
@@ -902,17 +1017,29 @@ function validCelestialEvent(event) {
     || (typeof event.time === "string" && event.time.length <= 64 && isNum(parseIsoMs(event.time)))
 }
 
-function parseSun(text) {
+// The answer for the day asked about at refMs (when given): a sunrise or
+// sunset more than two days from it belongs to some other day.
+function parseSun(text, refMs) {
   var data = parseJson(text)
   var p = data && data.properties
   if (!p || !validCelestialEvent(p.sunrise) || !validCelestialEvent(p.sunset)) return null
-  return {
+  var sun = {
     riseMs: p.sunrise ? parseIsoMs(p.sunrise.time) : NaN,
     setMs: p.sunset ? parseIsoMs(p.sunset.time) : NaN
   }
+  if (isNum(refMs) && [sun.riseMs, sun.setMs].some(function(ms) { return isNum(ms) && Math.abs(ms - refMs) > 2 * 24 * HOUR_MS }))
+    return null
+  return sun
 }
 
 // ---------------------------------------------------------------- location
+
+// A coordinate as a number or a string that is only a decimal number
+// ("57.93"), else NaN: "58north" is not 58.
+function coordinate(value) {
+  if (isNum(value)) return value
+  return typeof value === "string" && /^\s*-?\d{1,3}(\.\d{1,12})?\s*$/.test(value) ? Number(value) : NaN
+}
 
 // weather.json holds {"name", "latitude", "longitude"} (owned by
 // omarchy-weather-location, shared with the built-in widget).
@@ -920,9 +1047,9 @@ function parseLocationFile(raw) {
   var unset = { name: "", latitude: null, longitude: null }
   var data = parseJson(raw)
   if (!data) return unset
-  var latitude = parseFloat(data.latitude)
-  var longitude = parseFloat(data.longitude)
-  var ok = isNum(latitude) && isNum(longitude)
+  var latitude = coordinate(data.latitude)
+  var longitude = coordinate(data.longitude)
+  var ok = isNum(latitude) && isNum(longitude) && Math.abs(latitude) <= 90 && Math.abs(longitude) <= 180
   return {
     name: boundedText(data.name, MAX_PLACE_NAME_CHARS),
     latitude: ok ? latitude : null,
@@ -979,7 +1106,7 @@ function parseGeocodingResults(raw) {
         .filter(function(part) { return !!part }).join(", "),
       latitude: r.latitude,
       longitude: r.longitude,
-      elevation: isNum(r.elevation) ? r.elevation : null,
+      elevation: plausibleElevation(r.elevation) ? r.elevation : null,
       key: key
     })
   }
@@ -1642,10 +1769,12 @@ function parseSmhiWarnings(text) {
   var warnings = []
   for (var i = 0; i < data.length && warnings.length < MAX_WARNINGS; i++) {
     var w = data[i]
-    if (!w || !w.event || SMHI_SEA_EVENTS.indexOf(w.event.code) >= 0 || !Array.isArray(w.warningAreas)) continue
+    // Not a warning at all: the response is malformed, not empty.
+    if (!w || typeof w !== "object") return null
+    if (!w.event || SMHI_SEA_EVENTS.indexOf(w.event.code) >= 0 || !Array.isArray(w.warningAreas)) continue
     for (var a = 0; a < w.warningAreas.length && warnings.length < MAX_WARNINGS; a++) {
       var area = w.warningAreas[a]
-      var level = area && area.warningLevel ? WARNING_LEVELS[String(area.warningLevel.code).toLowerCase()] : 0
+      var level = area && area.warningLevel ? ownValue(WARNING_LEVELS, scalarText(area.warningLevel.code).toLowerCase()) : 0
       if (!level) continue
       var polygons = geoJsonPolygons(area.area, budget)
       if (!polygons.length) continue
@@ -1659,7 +1788,7 @@ function parseSmhiWarnings(text) {
       // One SMHI warning holds several areas, nested or one after the other
       // (an orange core inside a yellow area, a later phase): each is a row.
       warnings.push({
-        id: "smhi:" + w.id + ":" + area.id,
+        id: "smhi:" + scalarText(w.id) + ":" + scalarText(area.id),
         level: level,
         title: warningTexts(area.eventDescription, langs),
         advice: advice,
@@ -1673,8 +1802,8 @@ function parseSmhiWarnings(text) {
 }
 
 function metLevel(props) {
-  var color = String(props.riskMatrixColor || String(props.awareness_level || "").split(";")[1] || "").trim().toLowerCase()
-  return WARNING_LEVELS[color] || 0
+  var color = (scalarText(props.riskMatrixColor) || scalarText(props.awareness_level).split(";")[1] || "").trim().toLowerCase()
+  return ownValue(WARNING_LEVELS, color) || 0
 }
 
 // The body is in one language, the one asked for in the URL.
@@ -1685,15 +1814,16 @@ function parseMetAlerts(text, lang) {
   var warnings = []
   for (var i = 0; i < data.features.length && warnings.length < MAX_WARNINGS; i++) {
     var f = data.features[i]
-    var p = f && f.properties
+    if (!f || typeof f !== "object") return null
+    var p = f.properties
     if (!p || p.geographicDomain === "marine") continue
     var level = metLevel(p)
     if (!level) continue
     var interval = f.when && Array.isArray(f.when.interval) ? f.when.interval : []
     var endMs = parseIsoMs(p.eventEndingTime || interval[1])
     var titles = {}, advice = {}, names = {}
-    titles[key] = warningText([p.eventAwarenessName, p.description].filter(Boolean).join(": "))
-    advice[key] = warningText([p.consequences, p.instruction].filter(Boolean).join(" "))
+    titles[key] = warningText([p.eventAwarenessName, p.description].map(warningText).filter(Boolean).join(": "))
+    advice[key] = warningText([p.consequences, p.instruction].map(warningText).filter(Boolean).join(" "))
     names[key] = warningText(p.area)
     warnings.push({
       id: "met:" + warningText(p.id),
@@ -1708,9 +1838,19 @@ function parseMetAlerts(text, lang) {
   return { warnings: warnings }
 }
 
+// CDATA sections unwrapped in one pass (an unclosed one is kept as it is),
+// then entities decoded.
 function xmlText(value) {
-  return String(value || "")
-    .replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, "$1")
+  var text = String(value || ""), out = "", pos = 0
+  for (;;) {
+    var start = text.indexOf("<![CDATA[", pos)
+    if (start < 0) break
+    var end = text.indexOf("]]>", start + 9)
+    if (end < 0) break
+    out += text.slice(pos, start) + text.slice(start + 9, end)
+    pos = end + 3
+  }
+  return (out + text.slice(pos))
     .replace(/&#x([0-9a-fA-F]+);/g, function(_, h) { return String.fromCharCode(parseInt(h, 16)) })
     .replace(/&#(\d+);/g, function(_, d) { return String.fromCharCode(parseInt(d, 10)) })
     .replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, "\"").replace(/&apos;/g, "'")
@@ -1718,10 +1858,28 @@ function xmlText(value) {
 }
 
 // Every <tag>…</tag> in xml (any prefix, attributes allowed), as inner text.
+// One pass over xml: every search only moves forward (the end of an opening
+// tag is the next ">", found once for all tags before it). An opening tag
+// with no closing tag after it throws: the document is cut off or malformed,
+// and the FMI parsers then read it as unreadable rather than as fewer items.
 function xmlAll(xml, tag) {
-  var re = new RegExp("<(?:\\w+:)?" + tag + "(?:\\s[^>]*)?>([\\s\\S]*?)</(?:\\w+:)?" + tag + ">", "g")
-  var out = [], m
-  while ((m = re.exec(xml)) !== null) out.push(m[1])
+  var open = new RegExp("<(?:\\w+:)?" + tag + "(?=[\\s>])", "g")
+  var close = new RegExp("</(?:\\w+:)?" + tag + ">", "g")
+  var out = [], m, gt = -1
+  while ((m = open.exec(xml)) !== null) {
+    if (gt < open.lastIndex) gt = xml.indexOf(">", open.lastIndex)
+    if (gt < 0) throw new Error("unclosed <" + tag + ">")
+    if (xml.charAt(gt - 1) === "/") {  // <tag/>, <tag attr="…" />: empty
+      out.push("")
+      open.lastIndex = gt + 1
+      continue
+    }
+    close.lastIndex = gt + 1
+    var c = close.exec(xml)
+    if (c === null) throw new Error("unclosed <" + tag + ">")
+    out.push(xml.slice(gt + 1, c.index))
+    open.lastIndex = close.lastIndex
+  }
   return out
 }
 
@@ -1734,13 +1892,31 @@ function xmlFirst(xml, tag) {
 // only when there are no items or every title is one of the sea-warning
 // titles seen in the feed; anything unexpected fetches the Atom feed.
 var FMI_SEA_TITLE = /^(Yellow|Orange|Red) [a-z ]+ warning for sea area: /
+// Far more than FMI publishes at once; a longer feed is unreadable.
+// A feed is read only whole (a cut-off one could read as having no
+// warnings), with at most MAX_FMI_ENTRIES entries and ids of at most
+// MAX_FMI_ID_CHARS.
+var MAX_FMI_ENTRIES = 1000
+var MAX_FMI_ID_CHARS = 256
+
+function completeFeed(xml, root) {
+  return new RegExp("<" + root + "[\\s>]").test(xml) && new RegExp("</(?:\\w+:)?" + root + ">\\s*$").test(xml)
+}
+
 function parseFmiRss(text) {
+  try { return readFmiRss(text) } catch (e) { return null }
+}
+
+function readFmiRss(text) {
   var xml = String(text || "")
-  if (!/<rss[\s>]/.test(xml)) return null
+  if (!completeFeed(xml, "rss")) return null
   var items = xmlAll(xml, "item")
+  if (items.length > MAX_FMI_ENTRIES) return null
   var ids = [], needsAtom = false
   for (var i = 0; i < items.length; i++) {
-    ids.push(xmlText(xmlFirst(items[i], "guid")).trim())
+    var guid = xmlText(xmlFirst(items[i], "guid")).trim()
+    if (guid.length > MAX_FMI_ID_CHARS) return null
+    ids.push(guid)
     if (!FMI_SEA_TITLE.test(xmlText(xmlFirst(items[i], "title")).trim())) needsAtom = true
   }
   return { ids: ids, needsAtom: needsAtom }
@@ -1765,28 +1941,34 @@ function capRing(text, budget) {
 // FMI's Atom feed → { ids, warnings }. Each entry is a CAP alert with one
 // <info> per language; land areas only (sea areas carry a METAREA geocode).
 function parseFmiAtom(text) {
+  try { return readFmiAtom(text) } catch (e) { return null }
+}
+
+function readFmiAtom(text) {
   var xml = String(text || "")
-  if (!/<feed[\s>]/.test(xml)) return null
+  if (!completeFeed(xml, "feed")) return null
   var budget = { left: MAX_WARNING_VERTICES }
   var ids = [], warnings = []
   var entries = xmlAll(xml, "entry")
+  if (entries.length > MAX_FMI_ENTRIES) return null
   for (var e = 0; e < entries.length; e++) {
     var alert = xmlFirst(entries[e], "alert")
     var id = xmlText(xmlFirst(alert, "identifier")).trim()
+    if (id.length > MAX_FMI_ID_CHARS) return null
     ids.push(id)
     if (warnings.length >= MAX_WARNINGS || xmlText(xmlFirst(alert, "status")).trim() !== "Actual"
         || xmlText(xmlFirst(alert, "msgType")).trim() === "Cancel") continue
     var infos = xmlAll(alert, "info")
     var title = {}, advice = {}, names = [], level = 0, startMs = NaN, endMs = NaN, areaPolys = null
     for (var i = 0; i < infos.length; i++) {
-      var lang = FMI_LANGS[xmlText(xmlFirst(infos[i], "language")).trim()]
+      var lang = ownValue(FMI_LANGS, xmlText(xmlFirst(infos[i], "language")).trim())
       if (!lang) continue
       var params = xmlAll(infos[i], "parameter")
       var impacts = ""
       for (var p = 0; p < params.length; p++) {
         var name = xmlText(xmlFirst(params[p], "valueName")).trim()
         var value = xmlText(xmlFirst(params[p], "value")).trim()
-        if (name === "color") level = WARNING_LEVELS[value.toLowerCase()] || level
+        if (name === "color") level = ownValue(WARNING_LEVELS, value.toLowerCase()) || level
         else if (name === "typicalImpacts") impacts = value
       }
       title[lang] = warningText(xmlText(xmlFirst(infos[i], "description")))
@@ -1823,6 +2005,21 @@ function parseFmiAtom(text) {
   return { ids: ids, warnings: warnings }
 }
 
+// Whether FMI's RSS index and Atom feed list the same alerts, each as often.
+function sameFmiIds(a, b) {
+  if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false
+  var counts = Object.create(null)
+  for (var i = 0; i < b.length; i++) {
+    if (typeof b[i] !== "string") return false
+    counts[b[i]] = (counts[b[i]] || 0) + 1
+  }
+  for (var j = 0; j < a.length; j++) {
+    if (typeof a[j] !== "string" || !counts[a[j]]) return false
+    counts[a[j]]--
+  }
+  return true
+}
+
 // warnings.json in the cache folder: the parsed sources with the validators
 // for their next check, written only when a source changes.
 //   { version, sources: { smhi|met|fmi: { key, etag, lastModified, warnings, ids? } } }
@@ -1834,15 +2031,66 @@ function warningStoreText(sources) {
 
 // → the sources, or {} when the file is missing, from another version or
 // not what it should be.
+// Sources as the parsers above produce them, each within the parsers' own
+// bounds. A source with any field or warning of another shape is left out
+// whole, validators included, so it is fetched again in full rather than
+// kept with warnings missing.
 function parseWarningStore(text) {
   var data = parseJson(text)
   var out = {}
   if (!data || data.version !== WARNING_STORE_VERSION || !data.sources || typeof data.sources !== "object") return out
   for (var provider in WARNING_PROVIDER_NAMES) {
-    var src = data.sources[provider]
-    if (src && typeof src.key === "string" && Array.isArray(src.warnings)) out[provider] = src
+    var src = ownValue(data.sources, provider)
+    if (!src || typeof src !== "object" || typeof src.key !== "string" || !Array.isArray(src.warnings)) continue
+    if ((src.etag !== undefined && typeof src.etag !== "string")
+        || (src.lastModified !== undefined && typeof src.lastModified !== "string")) continue
+    if (src.ids !== undefined && !(Array.isArray(src.ids) && src.ids.length <= MAX_FMI_ENTRIES
+        && src.ids.every(function(id) { return typeof id === "string" && id.length <= MAX_FMI_ID_CHARS }))) continue
+    if (src.warnings.length > MAX_WARNINGS) continue
+    var budget = { left: MAX_WARNING_VERTICES }
+    var warnings = src.warnings.map(function(w) { return storedWarning(w, budget) })
+    if (warnings.indexOf(null) >= 0) continue
+    var clean = { key: src.key, etag: src.etag || "", lastModified: src.lastModified || "", warnings: warnings }
+    if (src.ids !== undefined) clean.ids = src.ids.slice()
+    out[provider] = clean
   }
   return out
+}
+
+function storedTexts(obj) {
+  var out = {}
+  if (!obj || typeof obj !== "object" || Array.isArray(obj)) return out
+  for (var lang in obj) {
+    var text = lang.length <= 8 && lang !== "__proto__" ? warningText(obj[lang]) : ""
+    if (text) out[lang] = text
+  }
+  return out
+}
+
+function storedWarning(w, budget) {
+  if (!w || typeof w !== "object" || typeof w.id !== "string" || w.id.length > 2 * MAX_FMI_ID_CHARS
+      || [1, 2, 3].indexOf(w.level) < 0 || !Array.isArray(w.areas)) return null
+  var time = function(v) { return v === null || plausibleTime(v) }
+  if (!time(w.startMs) || !time(w.endMs)) return null
+  var areas = []
+  for (var a = 0; a < w.areas.length; a++) {
+    var area = w.areas[a]
+    if (!area || typeof area !== "object" || !Array.isArray(area.polygons)) return null
+    var polygons = []
+    for (var p = 0; p < area.polygons.length; p++) {
+      var rings = area.polygons[p]
+      if (!Array.isArray(rings)) return null
+      for (var r = 0; r < rings.length; r++) {
+        var ring = rings[r]
+        if (!Array.isArray(ring) || ring.length < 8 || ring.length % 2 || (budget.left -= ring.length / 2) < 0
+            || !ring.every(isNum)) return null
+      }
+      polygons.push(rings.map(function(ring) { return ring.slice() }))
+    }
+    areas.push({ name: storedTexts(area.name), polygons: polygons })
+  }
+  return { id: w.id, level: w.level, title: storedTexts(w.title), advice: storedTexts(w.advice),
+           startMs: w.startMs, endMs: w.endMs, areas: areas }
 }
 
 // "18", "18:30", or with the weekday when it isn't today ("sön 06").
@@ -2675,6 +2923,8 @@ if (typeof module !== "undefined") {
     parseMetAlerts: parseMetAlerts,
     parseFmiRss: parseFmiRss,
     parseFmiAtom: parseFmiAtom,
+    sameFmiIds: sameFmiIds,
+    MAX_FMI_ENTRIES: MAX_FMI_ENTRIES,
     buildWarnings: buildWarnings,
     skyColor: skyColor,
     faintGlyphAlpha: faintGlyphAlpha,
@@ -2722,6 +2972,9 @@ if (typeof module !== "undefined") {
     parseHttpResponse: parseHttpResponse,
     isFresh: isFresh,
     cacheEntryFromResponse: cacheEntryFromResponse,
+    usableCache: usableCache,
+    MAX_CACHE_TTL_MS: MAX_CACHE_TTL_MS,
+    plausibleElevation: plausibleElevation,
     jitterMs: jitterMs,
     splitSymbol: splitSymbol,
     describeSymbol: describeSymbol,
@@ -2735,6 +2988,7 @@ if (typeof module !== "undefined") {
     GUST_SHADOW_MAX: GUST_SHADOW_MAX,
     gustShadow: gustShadow,
     parseTimeseries: parseTimeseries,
+    usableTimeseries: usableTimeseries,
     parseSun: parseSun,
     parseMoon: parseMoon,
     moonPhaseAt: moonPhaseAt,

@@ -69,3 +69,91 @@ test("base map channel order: build script and shader agree", () => {
   assert.match(script, /Image\.merge\("RGB", \[road_img, water_img, border_img\]\)/)
   assert.match(shader, /c\.grb \/ c\.a/)
 })
+
+// The build's extract cache is plain data: what it reads back is exactly
+// what was written, and anything else (short, longer, another version or
+// class, a link, a missing region) is refused rather than run or rendered.
+const python = require("node:child_process").spawnSync("which", ["python3"], { encoding: "utf8" }).stdout.trim()
+test("base map extract cache round-trips and refuses malformed files", { skip: !python && "python3 required" }, () => {
+  const program = String.raw`
+import importlib.util, os, struct, sys, tempfile
+spec = importlib.util.spec_from_file_location("bb", sys.argv[1])
+bb = importlib.util.module_from_spec(spec); spec.loader.exec_module(bb)
+d = tempfile.mkdtemp()
+path = os.path.join(d, "region.features")
+water, roads, borders = [b"\x01" * 9, b""], [("motorway", b"\x02" * 5), ("secondary", b"\x03")], [b"\x04" * 3]
+bb.write_extract(path, water, roads, borders)
+assert bb.read_extract(path) == (water, roads, borders)
+assert [f for f in os.listdir(d)] == ["region.features"], os.listdir(d)
+good = open(path, "rb").read()
+
+def refused(data, why):
+    with open(path, "wb") as f:
+        f.write(data)
+    try:
+        bb.read_extract(path)
+    except bb.ExtractError:
+        return
+    raise AssertionError("accepted: " + why)
+
+for cut in range(len(good)):
+    refused(good[:cut], "truncated at %d" % cut)
+refused(good + b"\x00", "trailing byte")
+refused(b"XXXX" + good[4:], "magic")
+refused(good[:4] + struct.pack("<I", 2) + good[8:], "version")
+refused(good[:8] + struct.pack("<I", 0xFFFFFFFF), "huge count")
+refused(good.replace(b"motorway", b"motorwax"), "road class")
+huge = good[:8] + struct.pack("<I", 1) + struct.pack("<I", bb.MAX_WKB_BYTES + 1)
+refused(huge, "huge record")
+
+# Checked without keeping records;
+# a file larger than any extract is refused before it is read.
+with open(path, "wb") as f:
+    f.write(good)
+assert bb.read_extract(path, keep=False) is None
+with open(path, "wb") as f:
+    f.write(good[:-1])
+try:
+    bb.read_extract(path, keep=False)
+    raise AssertionError("checked a truncated file as whole")
+except bb.ExtractError:
+    pass
+with open(path, "wb") as f:
+    f.write(good)
+bb.MAX_EXTRACT_BYTES = len(good) - 1
+refused(good, "larger than the limit")
+bb.MAX_EXTRACT_BYTES = 4 * 1024 ** 3
+
+os.unlink(path)
+os.symlink(os.path.join(d, "elsewhere"), path)
+open(os.path.join(d, "elsewhere"), "wb").write(good)
+try:
+    bb.read_extract(path)
+    raise AssertionError("followed a symlink")
+except bb.ExtractError:
+    pass
+
+# Rendering needs every region's extract, newer than its OSM data.
+bb.EXTRACTED, bb.OSM = d, d
+bb.region_names = lambda: ["present", "absent"]
+bb.write_extract(os.path.join(d, "present.features"), [], [], [])
+try:
+    bb.load_extracted()
+    raise AssertionError("rendered without a region")
+except SystemExit as e:
+    assert "no extract for absent" in str(e), e
+open(os.path.join(d, "absent-latest.osm.pbf"), "wb").close()
+bb.write_extract(os.path.join(d, "absent.features"), [], [], [])
+os.utime(os.path.join(d, "absent.features"), (1, 1))
+try:
+    bb.load_extracted()
+    raise AssertionError("rendered from a stale extract")
+except SystemExit as e:
+    assert "older than its OSM data" in str(e), e
+print("EXTRACT_OK")
+`
+  const r = require("node:child_process").spawnSync(python, ["-I", "-c", program, path.join(ROOT, "scripts", "build-basemap.py")],
+    { encoding: "utf8", timeout: 30000 })
+  assert.equal(r.status, 0, r.stderr + r.stdout)
+  assert.match(r.stdout, /EXTRACT_OK/)
+})
